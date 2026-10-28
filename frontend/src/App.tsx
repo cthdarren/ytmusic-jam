@@ -7,6 +7,7 @@ import { NowPlaying } from './components/NowPlaying'
 import { QueueDrawer } from './components/QueueDrawer'
 import { SearchBar } from './components/SearchBar'
 import { SearchResults } from './components/SearchResults'
+import { TopBar } from './components/TopBar'
 import type { Role, SearchKind, Track } from './types'
 import { useRoom } from './useRoom'
 
@@ -113,20 +114,13 @@ function Jam({ role, onLoggedOut }: { role: Role; onLoggedOut: () => void }) {
 
   return (
     <div className="app">
-      <header className="topbar">
-        <h1>YT Music Jam</h1>
-        <div className="topbar-actions">
-          {role === 'owner' ? (
-            <>
-              <button onClick={() => setInviteOpen(true)}>Invite</button>
-              {isHost ? null : <a className="button" href="/host">Open player</a>}
-              <button onClick={() => run(api.logout).then(onLoggedOut)}>Log out</button>
-            </>
-          ) : (
-            <span className="muted small">Jamming as {nickname}</span>
-          )}
-        </div>
-      </header>
+      <TopBar
+        role={role}
+        nickname={nickname}
+        isHost={isHost}
+        onInvite={() => setInviteOpen(true)}
+        onLogout={() => run(api.logout).then(onLoggedOut)}
+      />
 
       {isHost ? <HostPlayer state={state} onError={showError} /> : null}
 
