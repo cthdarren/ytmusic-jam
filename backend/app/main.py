@@ -51,7 +51,7 @@ def create_app(
     settings = settings if settings is not None else Settings.from_env()
     ytm = ytm if ytm is not None else YTMClient()
     auth = Auth(settings)
-    room = Room()
+    room = Room(settings.data_dir / "room.json")
     hub = Hub()
     app = FastAPI(title="YT Music Jam")
 
@@ -77,6 +77,7 @@ def create_app(
     api = APIRouter(dependencies=[Depends(session_role)])
 
     async def changed() -> RoomState:
+        room.save()
         state = room.snapshot()
         await hub.broadcast(state)
         return state
@@ -146,6 +147,20 @@ def create_app(
         added_by = (body.added_by or "").strip()[:40] or None
         room.add(track, added_by)
         return await changed()
+
+    # Declared before the /api/queue/{item_id}/... routes so "clear" is never read as an item id.
+    @api.post("/api/queue/clear", dependencies=[Depends(require_owner)])
+    async def clear_queue() -> RoomState:
+        room.clear()
+        return await changed()
+
+    @api.post("/api/queue/{item_id}/play")
+    async def play_item(item_id: str) -> RoomState:
+        try:
+            jumped = room.jump(item_id)
+        except KeyError:
+            raise HTTPException(404, "That song is no longer in the queue")
+        return await changed() if jumped else room.snapshot()
 
     @api.delete("/api/queue/{item_id}")
     async def remove_from_queue(item_id: str) -> RoomState:
