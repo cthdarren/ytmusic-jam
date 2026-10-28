@@ -1,10 +1,11 @@
+import asyncio
 import os
 import time
 
 import anyio
 import pytest
 
-from app.audio import AudioCache, AudioUnavailable, Preloader
+from app.audio import AudioCache, AudioPaused, AudioUnavailable, Preloader
 from tests.conftest import FakeDownloader
 
 pytestmark = pytest.mark.anyio
@@ -107,11 +108,11 @@ async def test_different_songs_download_in_parallel(tmp_path):
 class CookieWritingDownloader(FakeDownloader):
     """Like yt-dlp: reads the cookie file it is given and rewrites it when done."""
 
-    def __call__(self, video_id, dest_dir, cookies_file):
+    def __call__(self, video_id, dest_dir, cookies_file, cancel=None):
         if cookies_file is not None:
             assert cookies_file.read_text().startswith("# Netscape")
             cookies_file.write_text(cookies_file.read_text() + f"refreshed-by-{video_id}\n")
-        return super().__call__(video_id, dest_dir, cookies_file)
+        return super().__call__(video_id, dest_dir, cookies_file, cancel)
 
 
 async def test_each_download_gets_its_own_cookie_copy_and_refreshes_are_kept(tmp_path):
@@ -274,8 +275,8 @@ async def test_failed_song_retried_without_another_update(tmp_path):
 
 async def test_download_that_cannot_be_found_is_not_redownloaded_in_a_loop(tmp_path):
     class OddExtension(FakeDownloader):
-        def __call__(self, video_id, dest_dir, cookies_file):
-            super().__call__(video_id, dest_dir, cookies_file).rename(dest_dir / f"{video_id}.mka")
+        def __call__(self, video_id, dest_dir, cookies_file, cancel=None):
+            super().__call__(video_id, dest_dir, cookies_file, cancel).rename(dest_dir / f"{video_id}.mka")
             return dest_dir / f"{video_id}.mka"
 
     dl = OddExtension()
@@ -334,3 +335,96 @@ async def test_ready_ids(tmp_path):
     await cache.ensure("aaaaaaaaaaa")
     (tmp_path / "cache" / "bbbbbbbbbbb.webm.part").write_bytes(b"x")
     assert cache.ready_ids() == {"aaaaaaaaaaa"}
+
+
+class RecordingDownloader(FakeDownloader):
+    """Remembers how many other downloads were running when each one started."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.started_alongside = {}
+
+    def __call__(self, video_id, dest_dir, cookies_file, cancel=None):
+        with self.lock:
+            self.started_alongside[video_id] = self.active
+        return super().__call__(video_id, dest_dir, cookies_file, cancel)
+
+
+async def test_playing_and_next_song_download_alone_first(tmp_path):
+    dl = RecordingDownloader(delay=0.15)
+    cache = make(tmp_path, dl)
+    preloader = Preloader(cache, concurrency=4)
+    wanted = ["aaaaaaaaaaa", "bbbbbbbbbbb", "ccccccccccc", "ddddddddddd", "eeeeeeeeeee"]
+    preloader.update(wanted)
+    await wait_until(lambda: all(cache.cached(v) for v in wanted) and preloader.idle)
+    assert downloaded_in_order(dl)[:2] == ["aaaaaaaaaaa", "bbbbbbbbbbb"]
+    assert dl.started_alongside["aaaaaaaaaaa"] == 0
+    assert dl.started_alongside["bbbbbbbbbbb"] == 0  # the next song gets the connection to itself
+    assert dl.max_active == 3  # then c, d and e go together
+    await preloader.close()
+
+
+async def test_next_song_first_when_playing_song_is_already_cached(tmp_path):
+    dl = RecordingDownloader(delay=0.15)
+    cache = make(tmp_path, dl)
+    await cache.ensure("aaaaaaaaaaa")
+    dl.calls.clear()
+    preloader = Preloader(cache, concurrency=4)
+    preloader.update(["aaaaaaaaaaa", "bbbbbbbbbbb", "ccccccccccc", "ddddddddddd"])
+    await wait_until(lambda: cache.cached("ddddddddddd") is not None and preloader.idle)
+    assert downloaded_in_order(dl)[0] == "bbbbbbbbbbb"
+    assert dl.max_active == 2  # b alone, then c and d together
+    await preloader.close()
+
+
+async def test_failed_next_song_does_not_block_the_rest(tmp_path):
+    dl = FakeDownloader(fail={"bbbbbbbbbbb"})
+    cache = make(tmp_path, dl)
+    preloader = Preloader(cache, concurrency=4)
+    preloader.update(["aaaaaaaaaaa", "bbbbbbbbbbb", "ccccccccccc"])
+    await wait_until(lambda: cache.cached("ccccccccccc") is not None)
+    await preloader.close()
+
+
+async def test_urgent_song_starts_without_waiting_for_older_downloads(tmp_path):
+    dl = RecordingDownloader(delay=0.4)
+    cache = make(tmp_path, dl)
+    preloader = Preloader(cache, concurrency=4)
+    preloader.update(["aaaaaaaaaaa", "bbbbbbbbbbb", "ccccccccccc", "ddddddddddd", "eeeeeeeeeee"])
+    await wait_until(lambda: {"ccccccccccc", "ddddddddddd", "eeeeeeeeeee"} <= {v for v, _ in dl.calls})
+    preloader.update(["zzzzzzzzzzz"])  # someone jumped to a new song while c, d, e download
+    await anyio.sleep(0.1)
+    assert "zzzzzzzzzzz" in {v for v, _ in dl.calls}  # started right away, not after c, d, e
+    await preloader.close()
+
+
+async def test_pause_others_stops_downloads_except_the_kept_ones(tmp_path):
+    dl = FakeDownloader(delay=0.5)
+    cache = make(tmp_path, dl)
+    a = asyncio.ensure_future(cache.ensure("aaaaaaaaaaa"))
+    b = asyncio.ensure_future(cache.ensure("bbbbbbbbbbb"))
+    await wait_until(lambda: dl.active == 2)
+    assert cache.pause_others(keep={"aaaaaaaaaaa"}) == {"bbbbbbbbbbb"}
+    with pytest.raises(AudioPaused):
+        await b
+    assert (await a).is_file()
+    assert dl.paused == ["bbbbbbbbbbb"]
+    assert (await cache.ensure("bbbbbbbbbbb")).is_file()  # resumes on the next request
+
+
+async def test_refocus_pauses_everything_but_the_playing_and_next_song(tmp_path):
+    dl = RecordingDownloader(delay=0.4)
+    cache = make(tmp_path, dl)
+    for done in ("aaaaaaaaaaa", "bbbbbbbbbbb"):
+        await cache.ensure(done)
+    preloader = Preloader(cache, concurrency=4)
+    preloader.update(["aaaaaaaaaaa", "bbbbbbbbbbb", "ccccccccccc", "ddddddddddd", "eeeeeeeeeee"])
+    await wait_until(lambda: dl.active == 3)  # c, d, e downloading together
+    preloader.update(["ddddddddddd", "fffffffffff", "ccccccccccc", "eeeeeeeeeee"])  # someone tapped d
+    preloader.refocus()
+    await wait_until(lambda: set(dl.paused) == {"ccccccccccc", "eeeeeeeeeee"})
+    await wait_until(lambda: cache.cached("fffffffffff") is not None)
+    assert dl.started_alongside["fffffffffff"] == 0  # the new next song downloads alone
+    # paused songs aren't failures: they resume straight after
+    await wait_until(lambda: cache.cached("ccccccccccc") is not None and cache.cached("eeeeeeeeeee") is not None)
+    await preloader.close()

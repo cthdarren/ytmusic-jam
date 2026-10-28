@@ -4,7 +4,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from app.audio import AudioUnavailable
+from app.audio import AudioPaused, AudioUnavailable
 from app.main import create_app
 from app.models import Track
 from app.settings import Settings
@@ -39,15 +39,21 @@ class FakeDownloader:
         self.lock = threading.Lock()
         self.active = 0
         self.max_active = 0  # most downloads seen running at the same time
+        self.paused = []  # downloads stopped through their cancel event
 
-    def __call__(self, video_id, dest_dir, cookies_file):
+    def __call__(self, video_id, dest_dir, cookies_file, cancel=None):
         with self.lock:
             self.calls.append((video_id, cookies_file))
             self.active += 1
             self.max_active = max(self.max_active, self.active)
         try:
-            if self.delay:
-                time.sleep(self.delay)
+            deadline = time.monotonic() + self.delay
+            while time.monotonic() < deadline:
+                if cancel is not None and cancel.is_set():
+                    with self.lock:
+                        self.paused.append(video_id)
+                    raise AudioPaused(video_id)
+                time.sleep(0.01)
         finally:
             with self.lock:
                 self.active -= 1

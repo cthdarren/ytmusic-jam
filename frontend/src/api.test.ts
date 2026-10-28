@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { isLink } from './api'
+import { describe, expect, it, vi } from 'vitest'
+import { isLink, next } from './api'
 
 describe('isLink', () => {
   it.each([
@@ -13,5 +13,23 @@ describe('isLink', () => {
 
   it.each(['daft punk', 'around the world', 'harder better', 'Evanescence', 'Tchaikovsky', 'Soundgarden'])('treats %s as a search', (text) => {
     expect(isLink(text)).toBe(false)
+  })
+})
+
+describe('next', () => {
+  it('marks a skip as manual so the server refocuses downloads', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(new Response('{}', { status: 200 })))
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      await next('item1', true)
+      await next('item2')
+      const bodies = fetchMock.mock.calls.map((call: unknown[]) => JSON.parse((call[1] as RequestInit).body as string))
+      expect(bodies).toEqual([
+        { expected_item_id: 'item1', manual: true },
+        { expected_item_id: 'item2', manual: false },
+      ])
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })

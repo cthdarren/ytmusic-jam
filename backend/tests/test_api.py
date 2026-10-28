@@ -403,3 +403,43 @@ def test_preload_workers_setting(settings, fake_downloader):
             add(c, vid)
         assert wait_for(lambda: fake_downloader.downloaded() == set(songs), timeout=10)
     assert fake_downloader.max_active == 3
+
+
+def started_parallel(fake_downloader, n):
+    return lambda: fake_downloader.active >= n
+
+
+def test_manual_skip_pauses_other_downloads(client, fake_downloader):
+    fake_downloader.delay = 0.4
+    for vid in SONGS:  # a plays; b is next; c, d, e preload together
+        add(client, vid)
+    assert wait_for(started_parallel(fake_downloader, 3), timeout=5)
+    current = client.get("/api/state").json()["now_playing"]["id"]
+    client.post("/api/player/next", json={"expected_item_id": current, "manual": True})
+    # b is playing now and c is next: d and e get paused
+    assert wait_for(lambda: {"ddddddddddd", "eeeeeeeeeee"} <= set(fake_downloader.paused))
+    assert "ccccccccccc" not in fake_downloader.paused
+
+
+def test_song_ending_naturally_does_not_pause_downloads(client, fake_downloader):
+    fake_downloader.delay = 0.4
+    for vid in SONGS:
+        add(client, vid)
+    assert wait_for(started_parallel(fake_downloader, 3), timeout=5)
+    current = client.get("/api/state").json()["now_playing"]["id"]
+    client.post("/api/player/next", json={"expected_item_id": current})
+    import time
+
+    time.sleep(0.2)
+    assert fake_downloader.paused == []
+
+
+def test_tapping_a_song_pauses_other_downloads(client, fake_downloader):
+    fake_downloader.delay = 0.4
+    for vid in SONGS:
+        add(client, vid)
+    assert wait_for(started_parallel(fake_downloader, 3), timeout=5)
+    state = client.get("/api/state").json()
+    tapped = state["queue"][-1]["id"]  # e
+    client.post(f"/api/queue/{tapped}/play")
+    assert wait_for(lambda: {"ccccccccccc", "ddddddddddd"} <= set(fake_downloader.paused))

@@ -42,11 +42,13 @@ The server fetches each song's audio with [yt-dlp](https://github.com/yt-dlp/yt-
 and the player page plays it. Only audio is downloaded, so it uses far less bandwidth
 than video and there are no ads. Songs that labels block from playing outside
 YouTube (common with official "Topic" audio tracks) work too. The current and next
-upcoming songs (20 by default, `JAM_PRELOAD_SONGS`) are downloaded ahead of time,
-nearest first and 4 at a time (`JAM_PRELOAD_WORKERS`), so skips and jumps start
-straight away. Each song takes a few seconds to download, so right after adding a
-batch of songs (or restarting) give it a minute; the queue marks songs that are
-ready to play instantly. The first song after a quiet
+upcoming songs (20 by default, `JAM_PRELOAD_SONGS`) are downloaded ahead of time so
+skips and jumps start straight away. The song playing and the next one always
+download first, on their own; the rest follow 4 at a time (`JAM_PRELOAD_WORKERS`).
+When someone skips or taps a song, other downloads pause until the new playing and
+next songs are ready, then resume where they left off. YouTube paces downloads
+(roughly 10–15 s per song), so right after adding a batch of songs (or restarting)
+give it a minute or two; the queue marks songs that are ready to play instantly. The first song after a quiet
 spell can take a few seconds to start.
 
 ### Use your YouTube Premium account (recommended)

@@ -3,6 +3,7 @@ import logging
 import os
 import shutil
 import tempfile
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -17,20 +18,36 @@ AUDIO_EXTENSIONS = {".webm", ".m4a", ".mp4", ".opus", ".ogg", ".mp3"}
 # Hours-long mixes would blow the cache; a stuck connection must not hang a download forever.
 MAX_FILE_BYTES = 300 * 1024 * 1024
 SOCKET_TIMEOUT_SECONDS = 30
+# The song playing and the next one; they download alone, before anything else.
+URGENT_SONGS = 2
 # Downloads are short-term: anything not played or preloaded for a day is deleted.
 MAX_AGE_SECONDS = 24 * 3600
 
-Downloader = Callable[[str, Path, Path | None], Path]
+# (video_id, dest_dir, cookies_file, cancel) -> downloaded file; stops early once `cancel` is set.
+Downloader = Callable[[str, Path, Path | None, threading.Event], Path]
 
 
 class AudioUnavailable(Exception):
     """YouTube wouldn't give us audio for this video (removed, private, region-blocked...)."""
 
 
-def ytdlp_download(video_id: str, dest_dir: Path, cookies_file: Path | None) -> Path:
-    """Download one track's best audio stream into `dest_dir` as `<id>.<ext>`. Blocking."""
+class AudioPaused(Exception):
+    """The download was paused to make room for a more urgent song; it resumes later."""
+
+
+def ytdlp_download(video_id: str, dest_dir: Path, cookies_file: Path | None,
+                   cancel: threading.Event | None = None) -> Path:
+    """Download one track's best audio stream into `dest_dir` as `<id>.<ext>`. Blocking.
+
+    Setting `cancel` stops the transfer at the next progress update; the partial file is
+    kept, so the next attempt carries on from where it stopped.
+    """
     from yt_dlp import YoutubeDL
-    from yt_dlp.utils import DownloadError
+    from yt_dlp.utils import DownloadCancelled, DownloadError
+
+    def stop_if_cancelled(_progress: dict) -> None:
+        if cancel is not None and cancel.is_set():
+            raise DownloadCancelled("paused for a more urgent song")
 
     opts = {
         "format": AUDIO_FORMAT,
@@ -41,6 +58,8 @@ def ytdlp_download(video_id: str, dest_dir: Path, cookies_file: Path | None) -> 
         "noprogress": True,
         "socket_timeout": SOCKET_TIMEOUT_SECONDS,
         "max_filesize": MAX_FILE_BYTES,
+        "progress_hooks": [stop_if_cancelled],
+        "continuedl": True,  # resume a paused download from its .part file
     }
     if cookies_file is not None:
         opts["cookiefile"] = str(cookies_file)
@@ -48,7 +67,11 @@ def ytdlp_download(video_id: str, dest_dir: Path, cookies_file: Path | None) -> 
         with YoutubeDL(opts) as ydl:
             info = ydl.extract_info(f"https://music.youtube.com/watch?v={video_id}", download=True)
             path = Path(ydl.prepare_filename(info))
+    except DownloadCancelled as e:
+        raise AudioPaused(video_id) from e
     except DownloadError as e:
+        if isinstance(e.exc_info[1], DownloadCancelled) if e.exc_info else False:
+            raise AudioPaused(video_id) from e
         raise AudioUnavailable(str(e)) from e
     if not path.is_file():
         raise AudioUnavailable(f"yt-dlp finished but {path.name} is missing")
@@ -74,6 +97,7 @@ class AudioCache:
         # Called (on the event loop) whenever the set of downloaded songs changes.
         self.on_change: Callable[[], None] | None = None
         self._inflight: dict[str, asyncio.Future[Path]] = {}
+        self._cancel: dict[str, threading.Event] = {}  # one per download in progress
 
     def ready_ids(self) -> set[str]:
         """Ids of every fully downloaded song."""
@@ -114,15 +138,24 @@ class AudioCache:
             return path
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         cookie_copy = self._copy_cookies()
+        cancel = self._cancel[video_id] = threading.Event()
         try:
-            path = await anyio.to_thread.run_sync(self.downloader, video_id, self.cache_dir, cookie_copy)
+            path = await anyio.to_thread.run_sync(self.downloader, video_id, self.cache_dir, cookie_copy, cancel)
             self._changed()
             if cookie_copy is not None:
                 await self._save_cookies(cookie_copy)
             return path
         finally:
+            self._cancel.pop(video_id, None)
             if cookie_copy is not None:
                 cookie_copy.unlink(missing_ok=True)
+
+    def pause_others(self, keep: set[str]) -> set[str]:
+        """Pause every download in progress except `keep`; returns the paused ids."""
+        paused = {video_id for video_id in self._cancel if video_id not in keep}
+        for video_id in paused:
+            self._cancel[video_id].set()
+        return paused
 
     def _copy_cookies(self) -> Path | None:
         if self.cookies_file is None or not self.cookies_file.is_file():
@@ -220,6 +253,14 @@ class Preloader:
         self.start()
         self._wake.set()
 
+    def refocus(self) -> None:
+        """Someone changed song by hand: pause everything except the song playing and the next
+        one so those two get the whole connection; the paused ones resume afterwards."""
+        paused = self.cache.pause_others(keep=set(self.wanted[:URGENT_SONGS]))
+        if paused:
+            log.info("Paused %d download(s) to get the next song ready first", len(paused))
+        self._wake.set()
+
     def reset(self) -> None:
         """Forget past failures (a new night has started)."""
         self._failed_at.clear()
@@ -230,15 +271,29 @@ class Preloader:
         await asyncio.gather(*self._workers, return_exceptions=True)
         self._workers = []
 
+    def _pending(self, video_id: str, now: float) -> bool:
+        """Still needs downloading (not cached and not backing off after a failure)."""
+        if self.cache.cached(video_id) is not None:
+            return False
+        failed_at = self._failed_at.get(video_id)
+        return failed_at is None or now - failed_at >= self.retry_after
+
     def _next(self) -> str | None:
+        """The song a free worker should download now, or None to wait.
+
+        The song playing and the next one download one at a time with nothing else running,
+        because downloads share a throttled connection and splitting it would delay the song
+        about to play. Once both are ready, the rest download in parallel, nearest first.
+        """
         now = time.monotonic()
-        for video_id in self.wanted:
-            if video_id in self._in_progress or self.cache.cached(video_id) is not None:
-                continue
-            failed_at = self._failed_at.get(video_id)
-            if failed_at is not None and now - failed_at < self.retry_after:
-                continue
-            return video_id
+        for video_id in self.wanted[:URGENT_SONGS]:
+            if self._pending(video_id, now):
+                # Start it straight away (older downloads already running can't be stopped);
+                # while it downloads, nothing new starts.
+                return None if video_id in self._in_progress else video_id
+        for video_id in self.wanted[URGENT_SONGS:]:
+            if video_id not in self._in_progress and self._pending(video_id, now):
+                return video_id
         return None
 
     async def _work(self) -> None:
@@ -273,8 +328,11 @@ class Preloader:
                 # we don't hit YouTube again for it in a tight loop.
                 raise AudioUnavailable(f"{video_id} downloaded but isn't usable")
             self._failed_at.pop(video_id, None)
+        except AudioPaused:
+            pass  # not a failure: it is picked up again once the urgent songs are ready
         except Exception:
             self._failed_at[video_id] = time.monotonic()
             log.warning("Couldn't preload %s", video_id, exc_info=True)
         finally:
             self._in_progress.discard(video_id)
+            self._wake.set()  # workers held back for this song (or idle) can go now

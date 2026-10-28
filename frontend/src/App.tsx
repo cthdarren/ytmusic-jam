@@ -132,7 +132,7 @@ function Jam({ role, onLoggedOut }: { role: Role; onLoggedOut: () => void }) {
       <NowPlaying
         state={state}
         connected={connected}
-        onSkip={() => current && run(() => api.next(current.id))}
+        onSkip={() => current && run(() => api.next(current.id, true))}
         onTogglePlay={() => state && run(() => api.setPlaying(!state.is_playing))}
         onOpenQueue={() => setQueueOpen(true)}
       />
