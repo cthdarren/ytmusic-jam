@@ -206,3 +206,20 @@ def test_ws_broadcasts_jump(client):
         ws.receive_json()
         client.post(f"/api/queue/{first}/play")
         assert ws.receive_json()["state"]["now_playing"]["id"] == first
+
+
+def test_failed_save_still_succeeds_and_broadcasts(settings):
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+    from tests.conftest import FakeYTM, login
+
+    # A directory where room.json should be makes every save fail (like a full or read-only disk).
+    (settings.data_dir / "room.json").mkdir()
+    with TestClient(create_app(ytm=FakeYTM(), static_dir=None, settings=settings)) as c:
+        login(c)
+        with c.websocket_connect("/ws") as ws:
+            ws.receive_json()
+            r = add(c, ID)
+            assert r.status_code == 200
+            assert ws.receive_json()["state"]["now_playing"]["track"]["video_id"] == ID

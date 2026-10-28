@@ -377,6 +377,19 @@ button:focus-visible {
   width: 100%;
 }
 
+/* The drawer opens mid-list on long nights, so keep its header (close, Clear queue) in view. */
+.drawer {
+  padding-top: 0;
+}
+
+.drawer > .drawer-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--surface);
+  padding: 16px 0 8px;
+}
+
 .drawer-header h2 {
   flex: 1;
 }

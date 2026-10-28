@@ -83,11 +83,32 @@ describe('QueueDrawer', () => {
     expect(screen.queryByRole('button', { name: 'Remove P1' })).toBeNull()
   })
 
+  /** Record which rows get scrolled to; restores the jsdom prototype afterwards. */
+  function captureScrolls(run: () => void): { row: Element; options: unknown }[] {
+    const calls: { row: Element; options: unknown }[] = []
+    const original = Element.prototype.scrollIntoView
+    Element.prototype.scrollIntoView = function (this: Element, options?: unknown) {
+      calls.push({ row: this, options })
+    } as Element['scrollIntoView']
+    try {
+      run()
+    } finally {
+      Element.prototype.scrollIntoView = original
+    }
+    return calls
+  }
+
   it('scrolls the now-playing row into view on open', () => {
-    const scroll = vi.fn()
-    Element.prototype.scrollIntoView = scroll
-    renderDrawer(night)
-    expect(scroll).toHaveBeenCalledWith({ block: 'center' })
+    const calls = captureScrolls(() => renderDrawer(night))
+    expect(calls).toHaveLength(1)
+    expect(calls[0].row).toHaveAttribute('aria-current', 'true')
+    expect(calls[0].options).toEqual({ block: 'center' })
+  })
+
+  it('opens a finished night at the last song played', () => {
+    const calls = captureScrolls(() => renderDrawer({ played: night.played }))
+    expect(calls).toHaveLength(1)
+    expect(calls[0].row.querySelector('.track-title')?.textContent).toBe('P2')
   })
 
   it('only the owner sees Clear queue', () => {

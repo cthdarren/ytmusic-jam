@@ -43,11 +43,12 @@ export function QueueDrawer({ open, played, nowPlaying, items, isOwner, onClose,
   // Show a dropped item in its new spot immediately; it's dropped once a new `items` broadcast arrives.
   const [pending, setPending] = useState<{ basis: QueueItem[]; order: string[] } | null>(null)
   const [confirmingClear, setConfirmingClear] = useState(false)
-  const nowPlayingRef = useRef<HTMLLIElement>(null)
+  // The row to open on: the current song, or the last one played once the night has finished.
+  const anchorRef = useRef<HTMLLIElement>(null)
 
-  // Long nights: open on the current song rather than the first song of the evening.
+  // Long nights: open on that row rather than the first song of the evening.
   useEffect(() => {
-    if (open) nowPlayingRef.current?.scrollIntoView?.({ block: 'center' })
+    if (open) anchorRef.current?.scrollIntoView?.({ block: 'center' })
   }, [open])
 
   const sensors = useSensors(
@@ -88,13 +89,17 @@ export function QueueDrawer({ open, played, nowPlaying, items, isOwner, onClose,
           <p className="empty">The queue is empty. Search for a song or paste a link to add one.</p>
         ) : (
           <ul className="queue-list">
-            {played.map((item) => (
-              <li key={item.id} className="queue-row played">
+            {played.map((item, index) => (
+              <li
+                key={item.id}
+                ref={nowPlaying === null && index === played.length - 1 ? anchorRef : undefined}
+                className="queue-row played"
+              >
                 <PlayButton item={item} onPlay={onPlay} />
               </li>
             ))}
             {nowPlaying ? (
-              <li ref={nowPlayingRef} className="queue-row current" aria-current="true">
+              <li ref={anchorRef} className="queue-row current" aria-current="true">
                 <TrackInfo track={nowPlaying.track} addedBy={nowPlaying.added_by} />
                 <span className="badge">Now playing</span>
               </li>

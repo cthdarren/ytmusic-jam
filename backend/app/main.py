@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 from typing import Literal
 
@@ -13,6 +14,8 @@ from app.models import RoomState, Track
 from app.room import Room
 from app.settings import Settings
 from app.ytm import UpstreamError, YTMClient
+
+log = logging.getLogger(__name__)
 
 DEFAULT_STATIC_DIR = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 _DEFAULT = object()
@@ -77,7 +80,12 @@ def create_app(
     api = APIRouter(dependencies=[Depends(session_role)])
 
     async def changed() -> RoomState:
-        room.save()
+        # Saving is best-effort: memory is the source of truth, and a full or read-only
+        # disk must not stop the broadcast (the host would never hear about the next song).
+        try:
+            room.save()
+        except OSError:
+            log.exception("Couldn't save the room; carrying on with it in memory")
         state = room.snapshot()
         await hub.broadcast(state)
         return state
