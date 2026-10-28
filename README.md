@@ -36,13 +36,42 @@ To update after pulling changes: `docker compose up -d --build`.
 Open **Open player** (`/host`) on the device connected to your speakers and press
 **Start jam**. Only that page makes sound; every other page is a remote control.
 
-**No ads:** the player is YouTube's own embed, so YouTube Premium applies when that
-browser is signed into your Premium Google account. Use Chrome: browsers that block
-third-party cookies (Safari, Brave, Firefox strict mode) hide your sign-in from the
-embed and you'll get ads.
+The server fetches each song's audio with [yt-dlp](https://github.com/yt-dlp/yt-dlp)
+and the player page plays it. Only audio is downloaded, so it uses far less bandwidth
+than video and there are no ads. Songs that labels block from playing outside
+YouTube (common with official "Topic" audio tracks) work too. The current and next
+songs are fetched ahead of time. The first song after a quiet spell can take a few
+seconds to start.
 
-Some videos have embedding turned off by the uploader. The player skips those
-automatically.
+### Use your YouTube Premium account (recommended)
+
+Without cookies the server fetches songs anonymously, which works but gets standard
+quality (~128 kbps). With your account's cookies it plays as you: Premium's higher
+quality audio (~256 kbps) and anything only your account can play.
+
+1. Open a **private/incognito window**, sign in at <https://music.youtube.com>.
+2. Export cookies for youtube.com with a "cookies.txt" export extension (for example
+   *Get cookies.txt LOCALLY*), in Netscape format.
+3. Save the file on the server as `./data/cookies.txt`, then **close the private
+   window** without signing out (signing out invalidates the cookies).
+
+No restart is needed. When the cookies eventually expire, repeat these steps. Treat
+the file like a password: anyone with it can use your YouTube account.
+
+Fetching audio this way is not how YouTube intends its content to be used and runs
+under your account. Accounts being flagged for it are rare, but it is your call.
+
+### When songs stop playing
+
+YouTube changes things often and yt-dlp catches up within days. Rebuilding the image
+installs the newest yt-dlp:
+
+```sh
+docker compose build --no-cache && docker compose up -d
+```
+
+Downloaded songs are kept in `./data/audio-cache` (500 MB by default, set
+`JAM_AUDIO_CACHE_MB`); the least recently played are deleted first.
 
 ## Security notes
 
