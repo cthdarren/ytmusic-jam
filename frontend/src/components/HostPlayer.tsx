@@ -1,12 +1,15 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { next, setPlaying } from '../api'
 import {
+  afterError,
   audioUrl,
+  isAutoplayBlocked,
   onPlayerEvent,
   type PlayerEvent,
   REPORT_DELAY_MS,
   shouldReportPause,
   shouldReportPlay,
+  SILENT_AUDIO,
 } from '../hostPlayerLogic'
 import type { RoomState } from '../types'
 
@@ -21,6 +24,8 @@ export function HostPlayer({ state, onError }: { state: RoomState | null; onErro
   // The queue item whose audio is loaded; events are reported against it, not whatever is current now.
   const loadedItemRef = useRef<string | null>(null)
   const reportTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  // Failed songs since the last one that actually played.
+  const consecutiveErrors = useRef(0)
   // Latest room state for the audio event handlers.
   const stateRef = useRef(state)
   useEffect(() => {
@@ -34,17 +39,37 @@ export function HostPlayer({ state, onError }: { state: RoomState | null; onErro
 
   const report = (e: unknown) => onError(e instanceof Error ? e.message : String(e))
 
-  const load = (audio: HTMLAudioElement, itemId: string, id: string) => {
-    loadedItemRef.current = itemId
-    audio.src = audioUrl(id)
-    if (stateRef.current?.is_playing) audio.play().catch(() => {}) // superseded loads reject; errors arrive via onError
-  }
+  // Superseded loads reject with AbortError and load failures arrive via onError, so only a
+  // browser autoplay block needs handling here: bring back "Start jam" instead of staying silent.
+  const tryPlay = useCallback(
+    (audio: HTMLAudioElement) => {
+      audio.play().catch((err) => {
+        if (!isAutoplayBlocked(err)) return
+        setStarted(false)
+        onError('Tap “Start jam” to let this device play sound')
+      })
+    },
+    [onError],
+  )
 
-  // "Start jam" must call play() inside the click, or browsers block audio with sound.
+  const load = useCallback(
+    (audio: HTMLAudioElement, itemId: string, id: string) => {
+      loadedItemRef.current = itemId
+      audio.src = audioUrl(id)
+      if (stateRef.current?.is_playing) tryPlay(audio)
+    },
+    [tryPlay],
+  )
+
+  // "Start jam" must call play() inside the tap or browsers block sound. Playing a silent clip
+  // unlocks the element even when the queue is empty, so later songs can start by themselves.
   const start = () => {
     setStarted(true)
     const audio = audioRef.current
-    if (audio && nowPlayingId && videoId) load(audio, nowPlayingId, videoId)
+    if (!audio) return
+    audio.src = SILENT_AUDIO
+    audio.play().catch(() => {})
+    if (nowPlayingId && videoId) load(audio, nowPlayingId, videoId)
   }
 
   // Load a new song whenever the now-playing item changes (item id, so the same song queued twice replays).
@@ -59,15 +84,19 @@ export function HostPlayer({ state, onError }: { state: RoomState | null; onErro
       return
     }
     if (loadedItemRef.current !== nowPlayingId) load(audio, nowPlayingId, videoId)
-  }, [started, nowPlayingId, videoId])
+  }, [started, nowPlayingId, videoId, load])
 
   // Follow play/pause from the room (e.g. someone tapped pause on their phone).
   useEffect(() => {
     const audio = audioRef.current
     if (!started || !audio || nowPlayingId === null) return
-    if (isPlaying) audio.play().catch(() => {})
-    else audio.pause()
-  }, [started, isPlaying, nowPlayingId])
+    if (isPlaying) {
+      if (audio.error) audio.load() // retry a song that failed, e.g. after the error breaker paused the jam
+      tryPlay(audio)
+    } else {
+      audio.pause()
+    }
+  }, [started, isPlaying, nowPlayingId, tryPlay])
 
   useEffect(() => () => clearTimeout(reportTimer.current), [])
 
@@ -116,6 +145,7 @@ export function HostPlayer({ state, onError }: { state: RoomState | null; onErro
         onCanPlay={() => setLoading(false)}
         onPlaying={() => {
           setLoading(false)
+          if (loadedItemRef.current) consecutiveErrors.current = 0
           reportLater((audio, roomPlaying) => shouldReportPlay({ paused: audio.paused, roomPlaying }), true)
         }}
         onPause={() =>
@@ -127,8 +157,16 @@ export function HostPlayer({ state, onError }: { state: RoomState | null; onErro
         }
         onEnded={() => handle({ kind: 'ended' })}
         onError={() => {
-          if (!loadedItemRef.current) return // src was cleared on purpose
+          if (!loadedItemRef.current) return // src was cleared on purpose (or the silent unlock clip)
           setLoading(false)
+          consecutiveErrors.current += 1
+          if (afterError(consecutiveErrors.current) === 'pause') {
+            // Several failures in a row: YouTube or the network is down. Don't burn through the queue.
+            clearTimeout(reportTimer.current)
+            onError("Can't get songs from YouTube right now — paused. Press play to try again.")
+            setPlaying(false).catch(report)
+            return
+          }
           onError(`Couldn't play ${stateRef.current?.now_playing?.track.title ?? 'that song'} — skipping`)
           handle({ kind: 'error' })
         }}

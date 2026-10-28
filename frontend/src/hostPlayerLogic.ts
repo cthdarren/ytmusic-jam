@@ -32,3 +32,20 @@ export function shouldReportPause(p: { paused: boolean; roomPlaying: boolean; cu
 export function shouldReportPlay(p: { paused: boolean; roomPlaying: boolean }): boolean {
   return !p.paused && !p.roomPlaying
 }
+
+/** After this many failed songs in a row, stop skipping: YouTube or the network is probably down. */
+export const MAX_CONSECUTIVE_ERRORS = 3
+
+/** What to do when a song fails to play, given how many have failed in a row (including this one). */
+export function afterError(consecutiveErrors: number): 'skip' | 'pause' {
+  return consecutiveErrors >= MAX_CONSECUTIVE_ERRORS ? 'pause' : 'skip'
+}
+
+/** True when the browser refused play() because nobody has tapped the page yet. */
+export function isAutoplayBlocked(err: unknown): boolean {
+  return err instanceof DOMException && err.name === 'NotAllowedError'
+}
+
+/** 10 ms of silence. Playing it inside the "Start jam" tap unlocks sound for later songs (Safari/iOS). */
+export const SILENT_AUDIO =
+  'data:audio/wav;base64,UklGRnQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YVAAAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA=='

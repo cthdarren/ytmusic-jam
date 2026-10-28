@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { audioUrl, onPlayerEvent, shouldReportPause, shouldReportPlay } from './hostPlayerLogic'
+import {
+  afterError,
+  audioUrl,
+  isAutoplayBlocked,
+  onPlayerEvent,
+  shouldReportPause,
+  shouldReportPlay,
+  SILENT_AUDIO,
+} from './hostPlayerLogic'
 
 describe('onPlayerEvent', () => {
   it('advances when a song ends', () => {
@@ -58,5 +66,38 @@ describe('shouldReportPlay', () => {
 describe('audioUrl', () => {
   it('points at the server audio endpoint', () => {
     expect(audioUrl('AfeV_OZmHvM')).toBe('/api/audio/AfeV_OZmHvM')
+  })
+})
+
+describe('afterError', () => {
+  it('skips the first couple of failures', () => {
+    expect(afterError(1)).toBe('skip')
+    expect(afterError(2)).toBe('skip')
+  })
+
+  it('pauses instead of draining the queue when songs keep failing', () => {
+    expect(afterError(3)).toBe('pause')
+    expect(afterError(10)).toBe('pause')
+  })
+})
+
+describe('isAutoplayBlocked', () => {
+  it('recognises the browser refusing to play without a tap', () => {
+    expect(isAutoplayBlocked(new DOMException('no', 'NotAllowedError'))).toBe(true)
+  })
+
+  it('ignores interrupted loads and other errors', () => {
+    expect(isAutoplayBlocked(new DOMException('replaced', 'AbortError'))).toBe(false)
+    expect(isAutoplayBlocked(new Error('x'))).toBe(false)
+    expect(isAutoplayBlocked(undefined)).toBe(false)
+  })
+})
+
+describe('SILENT_AUDIO', () => {
+  it('is a playable WAV data URI', () => {
+    expect(SILENT_AUDIO.startsWith('data:audio/wav;base64,')).toBe(true)
+    const bytes = atob(SILENT_AUDIO.split(',')[1])
+    expect(bytes.slice(0, 4)).toBe('RIFF')
+    expect(bytes.slice(8, 12)).toBe('WAVE')
   })
 })
