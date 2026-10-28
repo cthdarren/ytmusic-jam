@@ -37,12 +37,20 @@ class FakeDownloader:
         self.delay = delay
         self.calls = []
         self.lock = threading.Lock()
+        self.active = 0
+        self.max_active = 0  # most downloads seen running at the same time
 
     def __call__(self, video_id, dest_dir, cookies_file):
         with self.lock:
             self.calls.append((video_id, cookies_file))
-        if self.delay:
-            time.sleep(self.delay)
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+        try:
+            if self.delay:
+                time.sleep(self.delay)
+        finally:
+            with self.lock:
+                self.active -= 1
         if video_id in self.fail:
             raise AudioUnavailable(f"{video_id} is unavailable")
         path = dest_dir / f"{video_id}.webm"
@@ -89,3 +97,12 @@ def client(anon_client):
     """A client logged in as the owner."""
     login(anon_client)
     return anon_client
+
+
+def next_state(ws, limit=20):
+    """Read websocket messages until a room "state" arrives (skipping "ready" updates)."""
+    for _ in range(limit):
+        msg = ws.receive_json()
+        if msg["type"] == "state":
+            return msg
+    raise AssertionError("no state message")

@@ -15,15 +15,21 @@ class Hub:
     def disconnect(self, ws: WebSocket) -> None:
         self.sockets.pop(ws, None)
 
-    async def send_state(self, ws: WebSocket, state: RoomState) -> None:
-        await ws.send_json({"type": "state", "state": state.model_dump()})
+    async def send_message(self, ws: WebSocket, message: dict) -> None:
+        await ws.send_json(message)
 
-    async def broadcast(self, state: RoomState) -> None:
+    async def broadcast_message(self, message: dict) -> None:
         for ws in list(self.sockets):
             try:
-                await self.send_state(ws, state)
+                await self.send_message(ws, message)
             except Exception:
                 self.disconnect(ws)
+
+    async def send_state(self, ws: WebSocket, state: RoomState) -> None:
+        await self.send_message(ws, {"type": "state", "state": state.model_dump()})
+
+    async def broadcast(self, state: RoomState) -> None:
+        await self.broadcast_message({"type": "state", "state": state.model_dump()})
 
     async def close_role(self, role: str, code: int) -> None:
         for ws, ws_role in list(self.sockets.items()):

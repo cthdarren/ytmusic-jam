@@ -71,7 +71,22 @@ class AudioCache:
         self.max_bytes = max_bytes
         self.downloader = downloader
         self._cookie_lock = asyncio.Lock()
+        # Called (on the event loop) whenever the set of downloaded songs changes.
+        self.on_change: Callable[[], None] | None = None
         self._inflight: dict[str, asyncio.Future[Path]] = {}
+
+    def ready_ids(self) -> set[str]:
+        """Ids of every fully downloaded song."""
+        if not self.cache_dir.is_dir():
+            return set()
+        return {p.stem for p in self.cache_dir.iterdir() if p.suffix in AUDIO_EXTENSIONS and p.is_file()}
+
+    def _changed(self) -> None:
+        if self.on_change is not None:
+            try:
+                self.on_change()
+            except Exception:
+                log.exception("Audio cache change listener failed")
 
     def cached(self, video_id: str) -> Path | None:
         if not self.cache_dir.is_dir():
@@ -101,6 +116,7 @@ class AudioCache:
         cookie_copy = self._copy_cookies()
         try:
             path = await anyio.to_thread.run_sync(self.downloader, video_id, self.cache_dir, cookie_copy)
+            self._changed()
             if cookie_copy is not None:
                 await self._save_cookies(cookie_copy)
             return path
@@ -142,22 +158,30 @@ class AudioCache:
         files = [p for p in self.cache_dir.iterdir() if p.is_file() and p.suffix in AUDIO_EXTENSIONS]
         total = sum(p.stat().st_size for p in files)
         stale_before = time.time() - max_age_seconds
+        deleted = 0
         for path in sorted(files, key=lambda p: p.stat().st_mtime):
             stat = path.stat()
             if path.stem in keep or (total <= self.max_bytes and stat.st_mtime >= stale_before):
                 continue
             path.unlink(missing_ok=True)
             total -= stat.st_size
+            deleted += 1
             log.info("Evicted %s from the audio cache", path.name)
+        if deleted:
+            self._changed()
 
     def clear(self) -> None:
         """Delete every downloaded track (the night was cleared). Downloads still in progress
         are left alone so a song re-added straight away isn't broken; prune tidies them later."""
         if not self.cache_dir.is_dir():
             return
+        deleted = 0
         for path in self.cache_dir.iterdir():
             if path.is_file() and path.suffix in AUDIO_EXTENSIONS:
                 path.unlink(missing_ok=True)
+                deleted += 1
+        if deleted:
+            self._changed()
 
 
 class Preloader:

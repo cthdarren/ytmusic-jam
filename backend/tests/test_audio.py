@@ -306,3 +306,31 @@ def test_clear_leaves_in_progress_downloads(tmp_path):
     (tmp_path / "cache" / "bbbbbbbbbbb.webm.part").write_bytes(b"x")
     cache.clear()
     assert [p.name for p in (tmp_path / "cache").iterdir()] == ["bbbbbbbbbbb.webm.part"]
+
+
+async def test_on_change_called_after_download_prune_and_clear(tmp_path):
+    changes = []
+    cache = make(tmp_path, FakeDownloader(size=400), max_bytes=500)
+    cache.on_change = lambda: changes.append(1)
+    await cache.ensure("aaaaaaaaaaa")
+    assert len(changes) == 1
+    await cache.ensure("aaaaaaaaaaa")  # already cached: nothing changed
+    assert len(changes) == 1
+    await cache.ensure("bbbbbbbbbbb")
+    assert len(changes) == 2
+    cache.prune(keep={"bbbbbbbbbbb"})  # over the cap: a goes
+    assert len(changes) == 3
+    cache.prune(keep={"bbbbbbbbbbb"})  # nothing to delete
+    assert len(changes) == 3
+    cache.clear()
+    assert len(changes) == 4
+    cache.clear()
+    assert len(changes) == 4
+
+
+async def test_ready_ids(tmp_path):
+    cache = make(tmp_path, FakeDownloader())
+    assert cache.ready_ids() == set()
+    await cache.ensure("aaaaaaaaaaa")
+    (tmp_path / "cache" / "bbbbbbbbbbb.webm.part").write_bytes(b"x")
+    assert cache.ready_ids() == {"aaaaaaaaaaa"}

@@ -1,3 +1,5 @@
+from tests.conftest import next_state
+
 ID = "dQw4w9WgXcQ"
 
 
@@ -86,12 +88,11 @@ def test_set_playing(client):
 
 def test_ws_receives_state_on_connect_and_on_change(client):
     with client.websocket_connect("/ws") as ws:
-        first = ws.receive_json()
+        first = next_state(ws)
         assert first["type"] == "state"
         assert first["state"]["version"] == 0
         add(client, ID)
-        msg = ws.receive_json()
-        assert msg["type"] == "state"
+        msg = next_state(ws)
         assert msg["state"]["version"] > 0
         assert msg["state"]["now_playing"]["track"]["video_id"] == ID
 
@@ -203,9 +204,9 @@ def test_room_survives_app_restart(settings):
 def test_ws_broadcasts_jump(client):
     first = queue_three(client)
     with client.websocket_connect("/ws") as ws:
-        ws.receive_json()
+        next_state(ws)
         client.post(f"/api/queue/{first}/play")
-        assert ws.receive_json()["state"]["now_playing"]["id"] == first
+        assert next_state(ws)["state"]["now_playing"]["id"] == first
 
 
 def test_failed_save_still_succeeds_and_broadcasts(settings):
@@ -219,10 +220,10 @@ def test_failed_save_still_succeeds_and_broadcasts(settings):
     with TestClient(create_app(ytm=FakeYTM(), static_dir=None, settings=settings)) as c:
         login(c)
         with c.websocket_connect("/ws") as ws:
-            ws.receive_json()
+            next_state(ws)
             r = add(c, ID)
             assert r.status_code == 200
-            assert ws.receive_json()["state"]["now_playing"]["track"]["video_id"] == ID
+            assert next_state(ws)["state"]["now_playing"]["track"]["video_id"] == ID
 
 
 def wait_for(condition, timeout=3.0):
@@ -349,3 +350,56 @@ def test_startup_cleans_stale_songs_and_preloads_the_restored_night(settings, fa
     os.utime(stale, (time.time() - 2 * 86400,) * 2)
     with TestClient(create_app(ytm=FakeYTM(), static_dir=None, settings=settings)):
         assert wait_for(lambda: not stale.exists() and (cache_dir / "aaaaaaaaaaa.webm").exists())
+
+
+def next_ready(ws, limit=20):
+    """Read websocket messages until a "ready" message arrives."""
+    for _ in range(limit):
+        msg = ws.receive_json()
+        if msg["type"] == "ready":
+            return msg["video_ids"]
+    raise AssertionError("no ready message")
+
+
+def test_ws_sends_ready_on_connect(client, settings):
+    add(client, "aaaaaaaaaaa")
+    assert wait_for(lambda: (settings.data_dir / "audio-cache" / "aaaaaaaaaaa.webm").exists())
+    with client.websocket_connect("/ws") as ws:
+        assert ws.receive_json()["type"] == "state"
+        assert ws.receive_json() == {"type": "ready", "video_ids": ["aaaaaaaaaaa"]}
+
+
+def test_ws_ready_updates_when_download_finishes(client):
+    with client.websocket_connect("/ws") as ws:
+        ws.receive_json()
+        assert next_ready(ws) == []
+        add(client, "aaaaaaaaaaa")
+        assert next_ready(ws) == ["aaaaaaaaaaa"]
+
+
+def test_ws_ready_updates_after_clear(client):
+    with client.websocket_connect("/ws") as ws:
+        ws.receive_json()
+        next_ready(ws)
+        add(client, "aaaaaaaaaaa")
+        assert next_ready(ws) == ["aaaaaaaaaaa"]
+        client.post("/api/queue/clear")
+        assert next_ready(ws) == []
+
+
+def test_preload_workers_setting(settings, fake_downloader):
+    from dataclasses import replace
+
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+    from tests.conftest import FakeYTM, login
+
+    fake_downloader.delay = 0.3
+    songs = [f"song{n:07d}" for n in range(8)]
+    with TestClient(create_app(ytm=FakeYTM(), static_dir=None, settings=replace(settings, preload_workers=3))) as c:
+        login(c)
+        for vid in songs:
+            add(c, vid)
+        assert wait_for(lambda: fake_downloader.downloaded() == set(songs), timeout=10)
+    assert fake_downloader.max_active == 3

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -69,8 +70,27 @@ def create_app(
             settings.audio_cache_mb * 1024 * 1024,
             downloader=ytdlp_download,
         )
-    preloader = Preloader(audio)
+    preloader = Preloader(audio, concurrency=settings.preload_workers)
     hub = Hub()
+
+    # Tell everyone which songs are downloaded (start instantly) whenever that changes.
+    last_ready: set[str] = audio.ready_ids()
+    background: set[asyncio.Task] = set()
+
+    def ready_message(ids: set[str]) -> dict:
+        return {"type": "ready", "video_ids": sorted(ids)}
+
+    def on_audio_change() -> None:
+        nonlocal last_ready
+        ids = audio.ready_ids()
+        if ids == last_ready:
+            return
+        last_ready = ids
+        task = asyncio.get_running_loop().create_task(hub.broadcast_message(ready_message(ids)))
+        background.add(task)
+        task.add_done_callback(background.discard)
+
+    audio.on_change = on_audio_change
 
     def preload(state: RoomState) -> None:
         """Keep the song playing and the next few downloaded, nearest first."""
@@ -256,6 +276,7 @@ def create_app(
         hub.connect(ws, role)
         try:
             await hub.send_state(ws, room.snapshot())
+            await hub.send_message(ws, ready_message(audio.ready_ids()))
             while True:
                 await ws.receive_text()
         except WebSocketDisconnect:
