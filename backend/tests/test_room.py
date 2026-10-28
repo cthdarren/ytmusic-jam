@@ -119,3 +119,117 @@ def test_advance_resumes_playback_when_next_song_exists():
     room.set_playing(False)
     room.advance(cur.id)
     assert room.snapshot().is_playing is True
+
+
+def order(room: Room) -> list[str]:
+    """Ids of the whole night in list order: played, now playing, upcoming."""
+    s = room.snapshot()
+    return [i.id for i in s.played] + ([s.now_playing.id] if s.now_playing else []) + [i.id for i in s.queue]
+
+
+def test_advance_moves_current_to_played():
+    room, (a, b, c) = room_with(0, 1, 2)
+    room.advance(a.id)
+    s = room.snapshot()
+    assert [i.id for i in s.played] == [a.id]
+    assert s.now_playing.id == b.id
+    assert [i.id for i in s.queue] == [c.id]
+
+
+def test_last_song_ending_goes_to_played():
+    room, (a,) = room_with(0)
+    room.advance(a.id)
+    s = room.snapshot()
+    assert [i.id for i in s.played] == [a.id]
+    assert s.now_playing is None
+
+
+def test_add_after_list_finished_plays_new_song():
+    room, (a,) = room_with(0)
+    room.advance(a.id)
+    b = room.add(t(1), None)
+    s = room.snapshot()
+    assert [i.id for i in s.played] == [a.id]
+    assert s.now_playing.id == b.id
+    assert s.is_playing is True
+
+
+def test_jump_back_carries_on_down_the_list():
+    room, items = room_with(*range(1, 9))
+    for item in items[:6]:
+        room.advance(item.id)
+    assert room.snapshot().now_playing.id == items[6].id
+    assert room.jump(items[2].id) is True
+    s = room.snapshot()
+    assert [i.id for i in s.played] == [items[0].id, items[1].id]
+    assert s.now_playing.id == items[2].id
+    assert [i.id for i in s.queue] == [i.id for i in items[3:]]
+    assert s.is_playing is True
+
+
+def test_jump_forward_passes_over_songs():
+    room, (a, b, c, d) = room_with(0, 1, 2, 3)
+    room.jump(c.id)
+    s = room.snapshot()
+    assert [i.id for i in s.played] == [a.id, b.id]
+    assert s.now_playing.id == c.id
+    assert [i.id for i in s.queue] == [d.id]
+
+
+def test_jump_keeps_list_order():
+    room, items = room_with(*range(6))
+    original = [i.id for i in items]
+    for target in (items[4], items[1], items[5], items[0], items[3]):
+        room.jump(target.id)
+        assert order(room) == original
+
+
+def test_jump_after_list_finished():
+    room, (a, b) = room_with(0, 1)
+    room.advance(a.id)
+    room.advance(b.id)
+    assert room.snapshot().now_playing is None
+    room.jump(a.id)
+    s = room.snapshot()
+    assert s.now_playing.id == a.id
+    assert [i.id for i in s.queue] == [b.id]
+    assert s.is_playing is True
+
+
+def test_jump_to_current_is_noop():
+    room, (a, _) = room_with(0, 1)
+    v = room.snapshot().version
+    assert room.jump(a.id) is False
+    assert room.snapshot().version == v
+
+
+def test_jump_unknown_raises():
+    room, _ = room_with(0, 1)
+    with pytest.raises(KeyError):
+        room.jump("nope")
+
+
+def test_jump_resumes_when_paused():
+    room, (_, b) = room_with(0, 1)
+    room.set_playing(False)
+    room.jump(b.id)
+    assert room.snapshot().is_playing is True
+
+
+def test_move_and_remove_ignore_played_ids():
+    room, (a, _, _) = room_with(0, 1, 2)
+    room.advance(a.id)
+    with pytest.raises(KeyError):
+        room.move(a.id, 0)
+    with pytest.raises(KeyError):
+        room.remove(a.id)
+
+
+def test_clear_empties_everything():
+    room, (a, _, _) = room_with(0, 1, 2)
+    room.advance(a.id)
+    v = room.snapshot().version
+    room.clear()
+    s = room.snapshot()
+    assert (s.played, s.now_playing, s.queue, s.is_playing) == ([], None, [], False)
+    assert s.version == v + 1

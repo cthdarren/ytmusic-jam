@@ -18,6 +18,7 @@ class QueueItem(BaseModel):
 
 
 class RoomState(BaseModel):
+    played: list[QueueItem]  # oldest first; played + now_playing + queue is the whole night in order
     now_playing: QueueItem | None
     queue: list[QueueItem]
     is_playing: bool

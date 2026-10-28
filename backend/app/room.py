@@ -2,9 +2,14 @@ from app.models import QueueItem, RoomState, Track
 
 
 class Room:
-    """The jam's playback state. Synchronous; callers keep it on one thread."""
+    """The jam's playback state. Synchronous; callers keep it on one thread.
+
+    The night is one ordered list split into `played`, `now_playing` and `queue`.
+    Advancing and jumping only move the split point; they never reorder the list.
+    """
 
     def __init__(self) -> None:
+        self.played: list[QueueItem] = []
         self.now_playing: QueueItem | None = None
         self.queue: list[QueueItem] = []
         self.is_playing = False
@@ -39,6 +44,8 @@ class Room:
         current_id = self.now_playing.id if self.now_playing else None
         if expected_item_id != current_id:
             return False
+        if self.now_playing is not None:
+            self.played.append(self.now_playing)
         if self.queue:
             # Moving on always plays, so a stray pause reported at the end of a song can't stall the jam.
             self.now_playing = self.queue.pop(0)
@@ -49,6 +56,28 @@ class Room:
         self.version += 1
         return True
 
+    def jump(self, item_id: str) -> bool:
+        """Play `item_id` from anywhere in the night; playback then carries on down the list."""
+        if self.now_playing is not None and self.now_playing.id == item_id:
+            return False
+        night = self.played + ([self.now_playing] if self.now_playing else []) + self.queue
+        index = next((i for i, item in enumerate(night) if item.id == item_id), None)
+        if index is None:
+            raise KeyError(item_id)
+        self.played = night[:index]
+        self.now_playing = night[index]
+        self.queue = night[index + 1:]
+        self.is_playing = True
+        self.version += 1
+        return True
+
+    def clear(self) -> None:
+        self.played = []
+        self.now_playing = None
+        self.queue = []
+        self.is_playing = False
+        self.version += 1
+
     def set_playing(self, playing: bool) -> None:
         if self.now_playing is None or self.is_playing == playing:
             return
@@ -57,6 +86,7 @@ class Room:
 
     def snapshot(self) -> RoomState:
         return RoomState(
+            played=list(self.played),
             now_playing=self.now_playing,
             queue=list(self.queue),
             is_playing=self.is_playing,

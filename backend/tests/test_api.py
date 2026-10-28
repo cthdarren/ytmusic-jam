@@ -23,7 +23,7 @@ def test_search_upstream_error_returns_502(client):
 
 def test_state_starts_empty(client):
     assert client.get("/api/state").json() == {
-        "now_playing": None, "queue": [], "is_playing": False, "version": 0}
+        "played": [], "now_playing": None, "queue": [], "is_playing": False, "version": 0}
 
 
 def test_add_by_link_starts_playing(client):
