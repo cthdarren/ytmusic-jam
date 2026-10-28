@@ -1,4 +1,13 @@
+import logging
+import os
+import tempfile
+from pathlib import Path
+
+from pydantic import ValidationError
+
 from app.models import QueueItem, RoomState, Track
+
+log = logging.getLogger(__name__)
 
 
 class Room:
@@ -8,12 +17,14 @@ class Room:
     Advancing and jumping only move the split point; they never reorder the list.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, store_path: Path | None = None) -> None:
+        self.store_path = store_path
         self.played: list[QueueItem] = []
         self.now_playing: QueueItem | None = None
         self.queue: list[QueueItem] = []
         self.is_playing = False
         self.version = 0
+        self._load()
 
     def add(self, track: Track, added_by: str | None) -> QueueItem:
         item = QueueItem(track=track, added_by=added_by)
@@ -92,6 +103,34 @@ class Room:
             is_playing=self.is_playing,
             version=self.version,
         )
+
+    def save(self) -> None:
+        """Write the night to `store_path` atomically, so a crash mid-write can't corrupt it."""
+        if self.store_path is None:
+            return
+        self.store_path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=self.store_path.parent, prefix=".room-", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(self.snapshot().model_dump_json())
+            os.replace(tmp, self.store_path)
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            raise
+
+    def _load(self) -> None:
+        """Restore a saved night, always paused so a restart never starts music on its own."""
+        if self.store_path is None or not self.store_path.is_file():
+            return
+        try:
+            state = RoomState.model_validate_json(self.store_path.read_text())
+        except (OSError, ValueError, ValidationError) as e:
+            log.warning("Ignoring unreadable room file %s: %s", self.store_path, e)
+            return
+        self.played = state.played
+        self.now_playing = state.now_playing
+        self.queue = state.queue
+        self.version = state.version
 
     def _index(self, item_id: str) -> int:
         for i, item in enumerate(self.queue):

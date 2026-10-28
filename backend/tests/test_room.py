@@ -233,3 +233,56 @@ def test_clear_empties_everything():
     s = room.snapshot()
     assert (s.played, s.now_playing, s.queue, s.is_playing) == ([], None, [], False)
     assert s.version == v + 1
+
+
+def test_reload_restores_lists_paused(tmp_path):
+    path = tmp_path / "room.json"
+    room = Room(path)
+    a, b, c = (room.add(t(n), "Sam") for n in range(3))
+    room.advance(a.id)
+    room.save()
+    restored = Room(path)
+    s = restored.snapshot()
+    assert [i.id for i in s.played] == [a.id]
+    assert s.now_playing.id == b.id
+    assert s.now_playing.added_by == "Sam"
+    assert [i.id for i in s.queue] == [c.id]
+    assert s.is_playing is False
+    assert s.version == room.snapshot().version
+
+
+def test_missing_store_starts_empty(tmp_path):
+    s = Room(tmp_path / "room.json").snapshot()
+    assert (s.played, s.now_playing, s.queue, s.version) == ([], None, [], 0)
+
+
+def test_corrupt_store_starts_empty(tmp_path):
+    path = tmp_path / "room.json"
+    path.write_text("{not json")
+    s = Room(path).snapshot()
+    assert (s.played, s.now_playing, s.queue) == ([], None, [])
+
+
+def test_clear_then_save_persists_empty(tmp_path):
+    path = tmp_path / "room.json"
+    room = Room(path)
+    room.add(t(0), None)
+    room.save()
+    room.clear()
+    room.save()
+    assert Room(path).snapshot().now_playing is None
+
+
+def test_save_leaves_no_temp_files(tmp_path):
+    room = Room(tmp_path / "room.json")
+    room.add(t(0), None)
+    room.save()
+    assert [p.name for p in tmp_path.iterdir()] == ["room.json"]
+
+
+def test_no_store_path_never_writes(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    room = Room()
+    room.add(t(0), None)
+    room.save()
+    assert list(tmp_path.iterdir()) == []
