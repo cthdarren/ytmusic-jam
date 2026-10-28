@@ -1,6 +1,8 @@
 import asyncio
 import logging
 import os
+import shutil
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
@@ -11,6 +13,9 @@ log = logging.getLogger(__name__)
 # Opus first (best quality per byte, and what Premium's 256 kbps stream uses), AAC as a fallback.
 AUDIO_FORMAT = "bestaudio[acodec=opus]/bestaudio[ext=m4a]/bestaudio"
 AUDIO_EXTENSIONS = {".webm", ".m4a", ".mp4", ".opus", ".ogg", ".mp3"}
+# Hours-long mixes would blow the cache; a stuck connection must not hang a download forever.
+MAX_FILE_BYTES = 300 * 1024 * 1024
+SOCKET_TIMEOUT_SECONDS = 30
 
 Downloader = Callable[[str, Path, Path | None], Path]
 
@@ -31,6 +36,8 @@ def ytdlp_download(video_id: str, dest_dir: Path, cookies_file: Path | None) -> 
         "quiet": True,
         "no_warnings": True,
         "noprogress": True,
+        "socket_timeout": SOCKET_TIMEOUT_SECONDS,
+        "max_filesize": MAX_FILE_BYTES,
     }
     if cookies_file is not None:
         opts["cookiefile"] = str(cookies_file)
@@ -48,8 +55,10 @@ def ytdlp_download(video_id: str, dest_dir: Path, cookies_file: Path | None) -> 
 class AudioCache:
     """Downloaded tracks on disk, capped in size, evicting the least recently used first.
 
-    Downloads run one at a time (yt-dlp rewrites the cookie file when it closes), and
-    concurrent requests for the same track share a single download.
+    Different tracks download in parallel, so the host never waits behind a prefetch;
+    concurrent requests for the same track share a single download. yt-dlp rewrites its
+    cookie file when it finishes, so each download gets a private copy and the refreshed
+    cookies are copied back afterwards (skipped if the original is read-only).
     """
 
     def __init__(self, cache_dir: Path, cookies_file: Path | None, max_bytes: int,
@@ -58,7 +67,7 @@ class AudioCache:
         self.cookies_file = cookies_file
         self.max_bytes = max_bytes
         self.downloader = downloader
-        self._lock = asyncio.Lock()
+        self._cookie_lock = asyncio.Lock()
         self._inflight: dict[str, asyncio.Future[Path]] = {}
 
     def cached(self, video_id: str) -> Path | None:
@@ -82,13 +91,45 @@ class AudioCache:
         return await asyncio.shield(task)
 
     async def _download(self, video_id: str) -> Path:
-        async with self._lock:
-            path = self.cached(video_id)
-            if path is not None:
-                return path
-            self.cache_dir.mkdir(parents=True, exist_ok=True)
-            cookies = self.cookies_file if self.cookies_file is not None and self.cookies_file.is_file() else None
-            return await anyio.to_thread.run_sync(self.downloader, video_id, self.cache_dir, cookies)
+        path = self.cached(video_id)
+        if path is not None:
+            return path
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        cookie_copy = self._copy_cookies()
+        try:
+            path = await anyio.to_thread.run_sync(self.downloader, video_id, self.cache_dir, cookie_copy)
+            if cookie_copy is not None:
+                await self._save_cookies(cookie_copy)
+            return path
+        finally:
+            if cookie_copy is not None:
+                cookie_copy.unlink(missing_ok=True)
+
+    def _copy_cookies(self) -> Path | None:
+        if self.cookies_file is None or not self.cookies_file.is_file():
+            return None
+        fd, name = tempfile.mkstemp(prefix="jam-cookies-", suffix=".txt")
+        os.close(fd)
+        shutil.copyfile(self.cookies_file, name)
+        return Path(name)
+
+    async def _save_cookies(self, refreshed: Path) -> None:
+        """Keep YouTube's refreshed cookies so the session doesn't go stale."""
+        assert self.cookies_file is not None
+        if not os.access(self.cookies_file, os.W_OK):
+            return
+        async with self._cookie_lock:
+            tmp: str | None = None
+            try:
+                fd, tmp = tempfile.mkstemp(dir=self.cookies_file.parent, prefix=".cookies-", suffix=".tmp")
+                os.close(fd)
+                shutil.copyfile(refreshed, tmp)
+                os.chmod(tmp, 0o600)
+                os.replace(tmp, self.cookies_file)
+            except OSError:
+                log.info("Couldn't write refreshed cookies back to %s", self.cookies_file, exc_info=True)
+                if tmp is not None:
+                    Path(tmp).unlink(missing_ok=True)
 
     def prune(self, keep: set[str]) -> None:
         """Delete least recently used tracks until the cache fits, never touching `keep`."""
