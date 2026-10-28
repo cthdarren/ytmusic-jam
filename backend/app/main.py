@@ -1,15 +1,17 @@
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
+from app.auth import COOKIE_NAME, SESSION_MAX_AGE, Auth, Role
 from app.hub import Hub
 from app.links import parse_video_id
 from app.models import RoomState, Track
 from app.room import Room
+from app.settings import Settings
 from app.ytm import UpstreamError, YTMClient
 
 DEFAULT_STATIC_DIR = Path(__file__).resolve().parents[2] / "frontend" / "dist"
@@ -33,21 +35,91 @@ class PlayingRequest(BaseModel):
     playing: bool
 
 
-def create_app(ytm: YTMClient | None = None, static_dir: Path | None | object = _DEFAULT) -> FastAPI:
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+def create_app(
+    ytm: YTMClient | None = None,
+    static_dir: Path | None | object = _DEFAULT,
+    settings: Settings | None = None,
+) -> FastAPI:
     """Build the app. Run in production with `uvicorn --factory app.main:create_app`."""
     if static_dir is _DEFAULT:
         static_dir = DEFAULT_STATIC_DIR if DEFAULT_STATIC_DIR.is_dir() else None
+    settings = settings if settings is not None else Settings.from_env()
     ytm = ytm if ytm is not None else YTMClient()
+    auth = Auth(settings)
     room = Room()
     hub = Hub()
     app = FastAPI(title="YT Music Jam")
+
+    def session_role(request: Request) -> Role:
+        role = auth.read_cookie(request.cookies.get(COOKIE_NAME))
+        if role is None:
+            raise HTTPException(401, "Not logged in")
+        return role
+
+    def require_owner(role: Role = Depends(session_role)) -> None:
+        if role != "owner":
+            raise HTTPException(403, "Only the host can do that")
+
+    def set_session(response: Response, role: Role) -> None:
+        response.set_cookie(
+            COOKIE_NAME, auth.make_cookie(role), max_age=SESSION_MAX_AGE,
+            httponly=True, samesite="lax", secure=settings.cookie_secure,
+        )
+
+    def join_url(request: Request) -> dict[str, str]:
+        return {"url": f"{request.base_url}join/{auth.join_token}"}
+
+    api = APIRouter(dependencies=[Depends(session_role)])
 
     async def changed() -> RoomState:
         state = room.snapshot()
         await hub.broadcast(state)
         return state
 
-    @app.get("/api/search")
+    @app.post("/api/auth/login")
+    async def login(body: LoginRequest, request: Request, response: Response) -> dict[str, str]:
+        ip = request.client.host if request.client else "unknown"
+        if not auth.login_allowed(ip):
+            raise HTTPException(429, "Too many failed attempts, try again in a minute")
+        if not auth.check_password(body.username, body.password):
+            auth.record_failure(ip)
+            raise HTTPException(401, "Wrong username or password")
+        set_session(response, "owner")
+        return {"role": "owner"}
+
+    @app.post("/api/auth/logout", status_code=204)
+    async def logout(response: Response) -> None:
+        response.delete_cookie(COOKIE_NAME, httponly=True, samesite="lax", secure=settings.cookie_secure)
+
+    @app.get("/api/auth/me")
+    async def me(role: Role = Depends(session_role)) -> dict[str, str]:
+        return {"role": role}
+
+    @app.get("/api/join", dependencies=[Depends(require_owner)])
+    async def get_join_url(request: Request) -> dict[str, str]:
+        return join_url(request)
+
+    @app.post("/api/join/reset", dependencies=[Depends(require_owner)])
+    async def reset_join_url(request: Request) -> dict[str, str]:
+        auth.reset_join_token()
+        await hub.close_role("guest", 4401)
+        return join_url(request)
+
+    @app.get("/join/{token}", include_in_schema=False)
+    async def join(token: str, request: Request) -> RedirectResponse:
+        if not auth.is_join_token(token):
+            return RedirectResponse("/?join=invalid", status_code=303)
+        response = RedirectResponse("/", status_code=303)
+        if auth.read_cookie(request.cookies.get(COOKIE_NAME)) != "owner":
+            set_session(response, "guest")
+        return response
+
+    @api.get("/api/search")
     async def search(q: str, kind: Literal["songs", "videos"] = "songs") -> list[Track]:
         if not q.strip():
             raise HTTPException(400, "Search query is empty")
@@ -56,11 +128,11 @@ def create_app(ytm: YTMClient | None = None, static_dir: Path | None | object = 
         except UpstreamError as e:
             raise HTTPException(502, f"YouTube Music search failed: {e}")
 
-    @app.get("/api/state")
+    @api.get("/api/state")
     async def get_state() -> RoomState:
         return room.snapshot()
 
-    @app.post("/api/queue")
+    @api.post("/api/queue")
     async def add_to_queue(body: AddRequest) -> RoomState:
         video_id = parse_video_id(body.input)
         if video_id is None:
@@ -75,7 +147,7 @@ def create_app(ytm: YTMClient | None = None, static_dir: Path | None | object = 
         room.add(track, added_by)
         return await changed()
 
-    @app.delete("/api/queue/{item_id}")
+    @api.delete("/api/queue/{item_id}")
     async def remove_from_queue(item_id: str) -> RoomState:
         try:
             room.remove(item_id)
@@ -83,7 +155,7 @@ def create_app(ytm: YTMClient | None = None, static_dir: Path | None | object = 
             raise HTTPException(404, "That song is no longer in the queue")
         return await changed()
 
-    @app.post("/api/queue/{item_id}/move")
+    @api.post("/api/queue/{item_id}/move")
     async def move_in_queue(item_id: str, body: MoveRequest) -> RoomState:
         try:
             room.move(item_id, body.to_index)
@@ -91,13 +163,13 @@ def create_app(ytm: YTMClient | None = None, static_dir: Path | None | object = 
             raise HTTPException(404, "That song is no longer in the queue")
         return await changed()
 
-    @app.post("/api/player/next")
+    @api.post("/api/player/next")
     async def next_song(body: NextRequest) -> RoomState:
         if room.advance(body.expected_item_id):
             return await changed()
         return room.snapshot()
 
-    @app.post("/api/player/playing")
+    @api.post("/api/player/playing")
     async def set_playing(body: PlayingRequest) -> RoomState:
         before = room.version
         room.set_playing(body.playing)
@@ -105,10 +177,17 @@ def create_app(ytm: YTMClient | None = None, static_dir: Path | None | object = 
             return await changed()
         return room.snapshot()
 
+    app.include_router(api)
+
     @app.websocket("/ws")
     async def ws_endpoint(ws: WebSocket) -> None:
         await ws.accept()
-        hub.connect(ws, "owner")
+        role = auth.read_cookie(ws.cookies.get(COOKIE_NAME))
+        if role is None:
+            # Accept-then-close so browsers see code 4401 instead of a bare handshake failure.
+            await ws.close(code=4401)
+            return
+        hub.connect(ws, role)
         try:
             await hub.send_state(ws, room.snapshot())
             while True:

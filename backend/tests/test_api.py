@@ -96,15 +96,17 @@ def test_ws_receives_state_on_connect_and_on_change(client):
         assert msg["state"]["now_playing"]["track"]["video_id"] == ID
 
 
-def test_spa_fallback_serves_index_for_client_routes(tmp_path):
+def test_spa_fallback_serves_index_for_client_routes(tmp_path, settings):
     from fastapi.testclient import TestClient
 
     from app.main import create_app
     from tests.conftest import FakeYTM
 
-    (tmp_path / "index.html").write_text("<div id=root></div>")
-    (tmp_path / "app.js").write_text("console.log(1)")
-    with TestClient(create_app(ytm=FakeYTM(), static_dir=tmp_path)) as c:
+    static = tmp_path / "dist"
+    static.mkdir()
+    (static / "index.html").write_text("<div id=root></div>")
+    (static / "app.js").write_text("console.log(1)")
+    with TestClient(create_app(ytm=FakeYTM(), static_dir=static, settings=settings)) as c:
         assert c.get("/host").text == "<div id=root></div>"
         assert c.get("/app.js").text == "console.log(1)"
         assert c.get("/api/nope").status_code == 404
