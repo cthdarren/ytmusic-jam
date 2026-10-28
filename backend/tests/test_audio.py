@@ -1,9 +1,10 @@
 import os
+import time
 
 import anyio
 import pytest
 
-from app.audio import AudioCache, AudioUnavailable
+from app.audio import AudioCache, AudioUnavailable, Preloader
 from tests.conftest import FakeDownloader
 
 pytestmark = pytest.mark.anyio
@@ -77,7 +78,8 @@ async def test_prune_evicts_lru_but_keeps_pinned(tmp_path):
     ids = ["aaaaaaaaaaa", "bbbbbbbbbbb", "ccccccccccc", "ddddddddddd"]
     for i, vid in enumerate(ids):
         path = await cache.ensure(vid)
-        os.utime(path, (1000 + i, 1000 + i))  # a is oldest, d newest
+        recent = time.time() - 60 + i
+        os.utime(path, (recent, recent))  # a is oldest, d newest; all used within the last minute
     cache.prune(keep={"aaaaaaaaaaa"})
     remaining = {vid for vid in ids if cache.cached(vid)}
     assert remaining == {"aaaaaaaaaaa", "ddddddddddd"}  # 800 bytes; oldest unpinned (b, c) evicted
@@ -134,3 +136,92 @@ async def test_read_only_cookie_file_still_downloads(tmp_path):
         assert cookies.read_text() == "# Netscape HTTP Cookie File\n"
     finally:
         cookies.chmod(0o644)
+
+
+async def wait_until(condition, timeout=3.0):
+    with anyio.fail_after(timeout):
+        while not condition():
+            await anyio.sleep(0.01)
+
+
+def downloaded_in_order(dl):
+    return [vid for vid, _ in dl.calls]
+
+
+async def test_preloads_in_priority_order(tmp_path):
+    dl = FakeDownloader(delay=0.05)
+    preloader = Preloader(make(tmp_path, dl), concurrency=1)
+    preloader.update(["aaaaaaaaaaa", "bbbbbbbbbbb", "ccccccccccc"])
+    await wait_until(lambda: len(dl.calls) == 3 and preloader.idle)
+    assert downloaded_in_order(dl) == ["aaaaaaaaaaa", "bbbbbbbbbbb", "ccccccccccc"]
+    await preloader.close()
+
+
+async def test_reprioritises_after_update(tmp_path):
+    dl = FakeDownloader(delay=0.2)
+    cache = make(tmp_path, dl)
+    preloader = Preloader(cache, concurrency=1)
+    preloader.update(["aaaaaaaaaaa", "bbbbbbbbbbb", "ccccccccccc", "ddddddddddd"])
+    await anyio.sleep(0.1)  # a is downloading
+    preloader.update(["ddddddddddd", "ccccccccccc"])  # someone jumped ahead
+    await wait_until(lambda: cache.cached("ccccccccccc") is not None and preloader.idle)
+    assert downloaded_in_order(dl) == ["aaaaaaaaaaa", "ddddddddddd", "ccccccccccc"]
+    await preloader.close()
+
+
+async def test_failed_song_not_retried_immediately(tmp_path):
+    dl = FakeDownloader(fail={"bbbbbbbbbbb"})
+    preloader = Preloader(make(tmp_path, dl), concurrency=2)
+    wanted = ["aaaaaaaaaaa", "bbbbbbbbbbb", "ccccccccccc"]
+    preloader.update(wanted)
+    await wait_until(lambda: len(dl.calls) == 3 and preloader.idle)
+    preloader.update(wanted)
+    await anyio.sleep(0.2)
+    assert downloaded_in_order(dl).count("bbbbbbbbbbb") == 1
+    await preloader.close()
+
+
+async def test_failed_song_retried_after_backoff(tmp_path):
+    dl = FakeDownloader(fail={"bbbbbbbbbbb"})
+    preloader = Preloader(make(tmp_path, dl), concurrency=1, retry_after=0.05)
+    preloader.update(["bbbbbbbbbbb"])
+    await wait_until(lambda: len(dl.calls) == 1 and preloader.idle)
+    await anyio.sleep(0.1)
+    dl.fail.clear()
+    preloader.update(["bbbbbbbbbbb"])
+    await wait_until(lambda: len(dl.calls) == 2 and preloader.idle)
+    await preloader.close()
+
+
+async def test_prunes_to_wanted_when_idle(tmp_path):
+    dl = FakeDownloader(size=400)
+    cache = make(tmp_path, dl, max_bytes=1000)
+    for old in ("xxxxxxxxxxx", "yyyyyyyyyyy"):
+        recent = time.time() - 60
+        os.utime(await cache.ensure(old), (recent, recent))  # older than a/b, but not stale
+    preloader = Preloader(cache, concurrency=2)
+    preloader.update(["aaaaaaaaaaa", "bbbbbbbbbbb"])
+    await wait_until(lambda: preloader.idle and cache.cached("bbbbbbbbbbb") is not None and cache.cached("xxxxxxxxxxx") is None)
+    assert cache.cached("aaaaaaaaaaa") and cache.cached("bbbbbbbbbbb")
+    assert cache.cached("yyyyyyyyyyy") is None
+    await preloader.close()
+
+
+async def test_prune_deletes_stale_files(tmp_path):
+    cache = make(tmp_path, FakeDownloader(), max_bytes=10**9)
+    two_hours_ago = time.time() - 7200
+    for vid in ("aaaaaaaaaaa", "bbbbbbbbbbb"):
+        os.utime(await cache.ensure(vid), (two_hours_ago, two_hours_ago))
+    await cache.ensure("ccccccccccc")
+    cache.prune(keep={"aaaaaaaaaaa"}, max_age_seconds=3600)
+    assert cache.cached("aaaaaaaaaaa") is not None  # pinned
+    assert cache.cached("bbbbbbbbbbb") is None  # stale
+    assert cache.cached("ccccccccccc") is not None  # fresh
+
+
+async def test_clear_removes_everything(tmp_path):
+    cache = make(tmp_path, FakeDownloader())
+    await cache.ensure("aaaaaaaaaaa")
+    (tmp_path / "cache" / "bbbbbbbbbbb.webm.part").write_bytes(b"x")
+    cache.clear()
+    assert list((tmp_path / "cache").iterdir()) == []
