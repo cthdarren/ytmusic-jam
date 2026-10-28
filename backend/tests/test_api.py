@@ -327,3 +327,25 @@ def test_remove_played_song_via_api(client):
     first = queue_three(client)
     state = client.delete(f"/api/queue/{first}").json()
     assert ids(state["played"]) == ["bbbbbbbbbbb"]
+
+
+def test_startup_cleans_stale_songs_and_preloads_the_restored_night(settings, fake_downloader):
+    import os
+    import time
+
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+    from tests.conftest import FakeYTM, login
+
+    with TestClient(create_app(ytm=FakeYTM(), static_dir=None, settings=settings)) as c:
+        login(c)
+        add(c, "aaaaaaaaaaa")
+    cache_dir = settings.data_dir / "audio-cache"
+    for f in cache_dir.iterdir():
+        f.unlink()
+    stale = cache_dir / "zzzzzzzzzzz.webm"
+    stale.write_bytes(b"x")
+    os.utime(stale, (time.time() - 2 * 86400,) * 2)
+    with TestClient(create_app(ytm=FakeYTM(), static_dir=None, settings=settings)):
+        assert wait_for(lambda: not stale.exists() and (cache_dir / "aaaaaaaaaaa.webm").exists())

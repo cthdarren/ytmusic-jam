@@ -151,11 +151,12 @@ class AudioCache:
             log.info("Evicted %s from the audio cache", path.name)
 
     def clear(self) -> None:
-        """Delete every downloaded track (the night was cleared)."""
+        """Delete every downloaded track (the night was cleared). Downloads still in progress
+        are left alone so a song re-added straight away isn't broken; prune tidies them later."""
         if not self.cache_dir.is_dir():
             return
         for path in self.cache_dir.iterdir():
-            if path.is_file():
+            if path.is_file() and path.suffix in AUDIO_EXTENSIONS:
                 path.unlink(missing_ok=True)
 
 
@@ -167,10 +168,13 @@ class Preloader:
     reorder the new nearest songs come first. Songs that fail aren't retried for a while.
     """
 
-    def __init__(self, cache: AudioCache, concurrency: int = 2, retry_after: float = 300.0) -> None:
+    def __init__(self, cache: AudioCache, concurrency: int = 2, retry_after: float = 300.0,
+                 idle_timeout: float = 3600.0) -> None:
         self.cache = cache
         self.concurrency = concurrency
         self.retry_after = retry_after
+        # Idle workers still wake up this often to prune, so old songs go even on quiet days.
+        self.idle_timeout = idle_timeout
         self.wanted: list[str] = []
         self._in_progress: set[str] = set()
         self._failed_at: dict[str, float] = {}
@@ -181,11 +185,20 @@ class Preloader:
     def idle(self) -> bool:
         return not self._in_progress and self._next() is None
 
+    def start(self) -> None:
+        """Start the workers (again, if any have stopped). Must be called on the event loop."""
+        self._workers = [w for w in self._workers if not w.done()]
+        while len(self._workers) < self.concurrency:
+            self._workers.append(asyncio.create_task(self._work()))
+
     def update(self, wanted: list[str]) -> None:
         self.wanted = list(dict.fromkeys(wanted))
-        if not self._workers:
-            self._workers = [asyncio.create_task(self._work()) for _ in range(self.concurrency)]
+        self.start()
         self._wake.set()
+
+    def reset(self) -> None:
+        """Forget past failures (a new night has started)."""
+        self._failed_at.clear()
 
     async def close(self) -> None:
         for worker in self._workers:
@@ -206,21 +219,38 @@ class Preloader:
 
     async def _work(self) -> None:
         while True:
-            video_id = self._next()
-            if video_id is None:
-                if not self._in_progress:
-                    self.cache.prune(keep=set(self.wanted))
-                self._wake.clear()
-                await self._wake.wait()
-                continue
-            self._in_progress.add(video_id)
             try:
-                await self.cache.ensure(video_id)
-                self._failed_at.pop(video_id, None)
+                await self._step()
             except asyncio.CancelledError:
                 raise
             except Exception:
-                self._failed_at[video_id] = time.monotonic()
-                log.warning("Couldn't preload %s", video_id, exc_info=True)
-            finally:
-                self._in_progress.discard(video_id)
+                # Never let one bad moment (a disk error while pruning, say) stop preloading for good.
+                log.exception("Preloader hit an error; carrying on")
+                await asyncio.sleep(1)
+
+    async def _step(self) -> None:
+        video_id = self._next()
+        if video_id is None:
+            if not self._in_progress:
+                self.cache.prune(keep=set(self.wanted))
+            self._wake.clear()
+            # Wake up anyway to prune on quiet days and to retry songs whose back-off has passed.
+            timeout = min(self.idle_timeout, self.retry_after) if self._failed_at else self.idle_timeout
+            try:
+                await asyncio.wait_for(self._wake.wait(), timeout)
+            except TimeoutError:
+                pass
+            return
+        self._in_progress.add(video_id)
+        try:
+            await self.cache.ensure(video_id)
+            if self.cache.cached(video_id) is None:
+                # Downloaded but not recognised as cached (unexpected file type): treat as failed so
+                # we don't hit YouTube again for it in a tight loop.
+                raise AudioUnavailable(f"{video_id} downloaded but isn't usable")
+            self._failed_at.pop(video_id, None)
+        except Exception:
+            self._failed_at[video_id] = time.monotonic()
+            log.warning("Couldn't preload %s", video_id, exc_info=True)
+        finally:
+            self._in_progress.discard(video_id)

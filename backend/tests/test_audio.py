@@ -183,13 +183,13 @@ async def test_failed_song_not_retried_immediately(tmp_path):
 
 async def test_failed_song_retried_after_backoff(tmp_path):
     dl = FakeDownloader(fail={"bbbbbbbbbbb"})
-    preloader = Preloader(make(tmp_path, dl), concurrency=1, retry_after=0.05)
+    cache = make(tmp_path, dl)
+    preloader = Preloader(cache, concurrency=1, retry_after=0.05)
     preloader.update(["bbbbbbbbbbb"])
     await wait_until(lambda: len(dl.calls) == 1 and preloader.idle)
-    await anyio.sleep(0.1)
     dl.fail.clear()
     preloader.update(["bbbbbbbbbbb"])
-    await wait_until(lambda: len(dl.calls) == 2 and preloader.idle)
+    await wait_until(lambda: cache.cached("bbbbbbbbbbb") is not None)
     await preloader.close()
 
 
@@ -219,9 +219,90 @@ async def test_prune_deletes_stale_files(tmp_path):
     assert cache.cached("ccccccccccc") is not None  # fresh
 
 
-async def test_clear_removes_everything(tmp_path):
+async def test_clear_removes_downloaded_songs(tmp_path):
     cache = make(tmp_path, FakeDownloader())
     await cache.ensure("aaaaaaaaaaa")
-    (tmp_path / "cache" / "bbbbbbbbbbb.webm.part").write_bytes(b"x")
+    await cache.ensure("bbbbbbbbbbb")
     cache.clear()
     assert list((tmp_path / "cache").iterdir()) == []
+
+
+class FlakyPruneCache(AudioCache):
+    """A cache whose first prune hits a disk error."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.prune_calls = 0
+
+    def prune(self, keep, max_age_seconds=86400):
+        self.prune_calls += 1
+        if self.prune_calls == 1:
+            raise OSError("EIO")
+        super().prune(keep, max_age_seconds)
+
+
+async def test_worker_survives_a_disk_error(tmp_path):
+    cache = FlakyPruneCache(tmp_path / "cache", None, 10_000, downloader=FakeDownloader())
+    preloader = Preloader(cache, concurrency=1)
+    preloader.update(["aaaaaaaaaaa"])
+    await wait_until(lambda: cache.prune_calls >= 1)
+    preloader.update(["aaaaaaaaaaa", "bbbbbbbbbbb"])
+    await wait_until(lambda: cache.cached("bbbbbbbbbbb") is not None)
+    await preloader.close()
+
+
+async def test_idle_prune_runs_on_a_timer(tmp_path):
+    cache = make(tmp_path, FakeDownloader(), max_bytes=10**9)
+    preloader = Preloader(cache, concurrency=1, idle_timeout=0.05)
+    preloader.update(["aaaaaaaaaaa"])
+    await wait_until(lambda: preloader.idle and cache.cached("aaaaaaaaaaa") is not None)
+    stale = await cache.ensure("bbbbbbbbbbb")
+    os.utime(stale, (time.time() - 2 * 86400,) * 2)
+    await wait_until(lambda: cache.cached("bbbbbbbbbbb") is None)  # no update() needed
+    await preloader.close()
+
+
+async def test_failed_song_retried_without_another_update(tmp_path):
+    dl = FakeDownloader(fail={"bbbbbbbbbbb"})
+    preloader = Preloader(make(tmp_path, dl), concurrency=1, retry_after=0.05)
+    preloader.update(["bbbbbbbbbbb"])
+    await wait_until(lambda: len(dl.calls) == 1)
+    dl.fail.clear()
+    await wait_until(lambda: len(dl.calls) == 2)
+    await preloader.close()
+
+
+async def test_download_that_cannot_be_found_is_not_redownloaded_in_a_loop(tmp_path):
+    class OddExtension(FakeDownloader):
+        def __call__(self, video_id, dest_dir, cookies_file):
+            super().__call__(video_id, dest_dir, cookies_file).rename(dest_dir / f"{video_id}.mka")
+            return dest_dir / f"{video_id}.mka"
+
+    dl = OddExtension()
+    preloader = Preloader(make(tmp_path, dl), concurrency=1)
+    preloader.update(["aaaaaaaaaaa"])
+    await wait_until(lambda: len(dl.calls) >= 1)
+    await anyio.sleep(0.2)
+    assert len(dl.calls) == 1
+    await preloader.close()
+
+
+async def test_reset_forgets_failures(tmp_path):
+    dl = FakeDownloader(fail={"aaaaaaaaaaa"})
+    preloader = Preloader(make(tmp_path, dl), concurrency=1)
+    preloader.update(["aaaaaaaaaaa"])
+    await wait_until(lambda: len(dl.calls) == 1 and preloader.idle)
+    dl.fail.clear()
+    preloader.reset()
+    preloader.update(["aaaaaaaaaaa"])
+    await wait_until(lambda: len(dl.calls) == 2)
+    await preloader.close()
+
+
+def test_clear_leaves_in_progress_downloads(tmp_path):
+    cache = make(tmp_path, FakeDownloader())
+    (tmp_path / "cache").mkdir()
+    (tmp_path / "cache" / "aaaaaaaaaaa.webm").write_bytes(b"x")
+    (tmp_path / "cache" / "bbbbbbbbbbb.webm.part").write_bytes(b"x")
+    cache.clear()
+    assert [p.name for p in (tmp_path / "cache").iterdir()] == ["bbbbbbbbbbb.webm.part"]

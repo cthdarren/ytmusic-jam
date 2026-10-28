@@ -72,8 +72,14 @@ def create_app(
     preloader = Preloader(audio)
     hub = Hub()
 
+    def preload(state: RoomState) -> None:
+        """Keep the song playing and the next few downloaded, nearest first."""
+        upcoming = ([state.now_playing] if state.now_playing else []) + state.queue[: settings.preload_songs]
+        preloader.update([item.track.video_id for item in upcoming])
+
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        preload(room.snapshot())  # a restored night is preloaded, and stale downloads pruned, right away
         yield
         await preloader.close()
 
@@ -109,9 +115,7 @@ def create_app(
             log.exception("Couldn't save the room; carrying on with it in memory")
         state = room.snapshot()
         await hub.broadcast(state)
-        # Keep the song playing and the next few downloaded, nearest first.
-        upcoming = ([state.now_playing] if state.now_playing else []) + state.queue[: settings.preload_songs]
-        preloader.update([item.track.video_id for item in upcoming])
+        preload(state)
         return state
 
     @app.post("/api/auth/login")
@@ -195,6 +199,7 @@ def create_app(
     async def clear_queue() -> RoomState:
         room.clear()
         state = await changed()
+        preloader.reset()
         audio.clear()  # downloads are short-term: a new night starts with an empty cache
         return state
 
