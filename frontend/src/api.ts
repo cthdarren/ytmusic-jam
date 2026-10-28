@@ -14,10 +14,14 @@ export class ApiError extends Error {
 
 const VIDEO_ID = /^[A-Za-z0-9_-]{11}$/
 
-/** True when the search box holds a YouTube link or bare video id rather than a search query. */
+/**
+ * True when the search box holds a YouTube link or bare video id rather than a search query.
+ * A bare 11-char token only counts if it has a digit, `_` or `-`, so one-word searches like
+ * "Evanescence" stay searches.
+ */
 export function isLink(text: string): boolean {
   const t = text.trim()
-  return t.includes('youtube.com/') || t.includes('youtu.be/') || VIDEO_ID.test(t)
+  return t.includes('youtube.com/') || t.includes('youtu.be/') || (VIDEO_ID.test(t) && /[0-9_-]/.test(t))
 }
 
 async function request<T>(path: string, init: { method?: string; body?: unknown } = {}): Promise<T> {

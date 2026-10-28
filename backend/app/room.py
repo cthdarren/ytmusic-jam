@@ -40,7 +40,9 @@ class Room:
         if expected_item_id != current_id:
             return False
         if self.queue:
+            # Moving on always plays, so a stray pause reported at the end of a song can't stall the jam.
             self.now_playing = self.queue.pop(0)
+            self.is_playing = True
         else:
             self.now_playing = None
             self.is_playing = False

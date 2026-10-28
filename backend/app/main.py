@@ -203,11 +203,15 @@ def create_app(
 
         @app.get("/{path:path}", include_in_schema=False)
         async def spa(path: str) -> FileResponse:
-            if path.startswith(("api/", "ws", "join/")):
+            if path == "ws" or path.startswith(("api/", "join/")):
                 raise HTTPException(404)
             candidate = (static_root / path).resolve()
             if path and candidate.is_file() and candidate.is_relative_to(static_root):
                 return FileResponse(candidate)
-            return FileResponse(index)
+            # A missing file (e.g. an old hashed asset after a redeploy) must 404, not get HTML back.
+            if path.startswith("assets/") or "." in path.rsplit("/", 1)[-1]:
+                raise HTTPException(404)
+            # Never cache index.html, so phones pick up new asset hashes after an update.
+            return FileResponse(index, headers={"Cache-Control": "no-cache"})
 
     return app

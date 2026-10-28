@@ -11,7 +11,7 @@ describe('isLink', () => {
     expect(isLink(text)).toBe(true)
   })
 
-  it.each(['daft punk', 'around the world', 'harder better'])('treats %s as a search', (text) => {
+  it.each(['daft punk', 'around the world', 'harder better', 'Evanescence', 'Tchaikovsky', 'Soundgarden'])('treats %s as a search', (text) => {
     expect(isLink(text)).toBe(false)
   })
 })

@@ -1,13 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
 import { next, setPlaying } from '../api'
-import { onPlayerEvent, type PlayerEvent } from '../hostPlayerLogic'
+import {
+  ENDED,
+  onPlayerEvent,
+  PAUSED,
+  PLAYING,
+  type PlayerEvent,
+  REPORT_DELAY_MS,
+  shouldReportPause,
+  shouldReportPlay,
+} from '../hostPlayerLogic'
 import type { RoomState } from '../types'
-
-// YT.PlayerState values; the YT global only exists once the API script has loaded.
-const ENDED = 0
-const PLAYING = 1
-const PAUSED = 2
-const BUFFERING = 3
 
 declare global {
   interface Window {
@@ -59,7 +62,18 @@ export function HostPlayer({ state, onError }: { state: RoomState | null; onErro
   useEffect(() => {
     if (!started || !mountRef.current) return
     let cancelled = false
+    let reportTimer: ReturnType<typeof setTimeout> | undefined
     const report = (e: unknown) => onError(e instanceof Error ? e.message : String(e))
+
+    // Play/pause made on the player itself is reported only if it is still true a moment
+    // later, so seeks, buffering, end-of-song pauses and our own commands don't echo back.
+    const reportLater = (check: (player: YT.Player, roomPlaying: boolean) => boolean, playing: boolean) => {
+      clearTimeout(reportTimer)
+      reportTimer = setTimeout(() => {
+        const player = playerRef.current
+        if (player && check(player, stateRef.current?.is_playing ?? false)) setPlaying(playing).catch(report)
+      }, REPORT_DELAY_MS)
+    }
 
     const handle = (event: PlayerEvent) => {
       const action = onPlayerEvent(event, stateRef.current?.now_playing?.id ?? null)
@@ -79,11 +93,23 @@ export function HostPlayer({ state, onError }: { state: RoomState | null; onErro
           onReady: () => setReady(true),
           onError: (e) => handle({ kind: 'error', code: Number(e.data) }),
           onStateChange: (e) => {
-            const playing = stateRef.current?.is_playing ?? false
-            if (e.data === ENDED) handle({ kind: 'ended' })
-            // Only report changes made on the player itself; ones we caused already match the room.
-            else if (e.data === PLAYING && !playing) setPlaying(true).catch(report)
-            else if (e.data === PAUSED && playing) setPlaying(false).catch(report)
+            if (e.data === ENDED) {
+              clearTimeout(reportTimer)
+              handle({ kind: 'ended' })
+            } else if (e.data === PLAYING) {
+              reportLater((player, roomPlaying) => shouldReportPlay({ playerState: player.getPlayerState(), roomPlaying }), true)
+            } else if (e.data === PAUSED) {
+              reportLater(
+                (player, roomPlaying) =>
+                  shouldReportPause({
+                    playerState: player.getPlayerState(),
+                    roomPlaying,
+                    currentTime: player.getCurrentTime(),
+                    duration: player.getDuration(),
+                  }),
+                false,
+              )
+            }
           },
         },
       })
@@ -91,6 +117,7 @@ export function HostPlayer({ state, onError }: { state: RoomState | null; onErro
 
     return () => {
       cancelled = true
+      clearTimeout(reportTimer)
       playerRef.current?.destroy()
       playerRef.current = null
       container.replaceChildren()
@@ -114,13 +141,13 @@ export function HostPlayer({ state, onError }: { state: RoomState | null; onErro
     else player.cueVideoById(videoId)
   }, [ready, nowPlayingId, videoId])
 
-  // Follow play/pause from the room (e.g. someone tapped pause on their phone).
+  // Follow play/pause from the room (e.g. someone tapped pause on their phone). Always issue the
+  // command: the player's own state can lag behind a quick pause→play, and both calls are idempotent.
   useEffect(() => {
     const player = playerRef.current
     if (!ready || !player || nowPlayingId === null) return
-    const current = player.getPlayerState()
-    if (isPlaying && current !== PLAYING && current !== BUFFERING) player.playVideo()
-    if (!isPlaying && (current === PLAYING || current === BUFFERING)) player.pauseVideo()
+    if (isPlaying) player.playVideo()
+    else player.pauseVideo()
   }, [ready, isPlaying, nowPlayingId])
 
   return (

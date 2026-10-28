@@ -110,3 +110,19 @@ def test_spa_fallback_serves_index_for_client_routes(tmp_path, settings):
         assert c.get("/host").text == "<div id=root></div>"
         assert c.get("/app.js").text == "console.log(1)"
         assert c.get("/api/nope").status_code == 404
+
+
+def test_spa_index_not_cached_and_missing_assets_404(tmp_path, settings):
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+    from tests.conftest import FakeYTM
+
+    static = tmp_path / "dist"
+    (static / "assets").mkdir(parents=True)
+    (static / "index.html").write_text("<div id=root></div>")
+    with TestClient(create_app(ytm=FakeYTM(), static_dir=static, settings=settings)) as c:
+        assert c.get("/host").headers["cache-control"] == "no-cache"
+        assert c.get("/").headers["cache-control"] == "no-cache"
+        assert c.get("/assets/index-OLDHASH.js").status_code == 404
+        assert c.get("/favicon-missing.svg").status_code == 404

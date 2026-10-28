@@ -112,3 +112,10 @@ def test_version_increments_only_on_change():
     assert room.snapshot().version == v
     room.advance(cur.id)
     assert room.snapshot().version == v + 1
+
+
+def test_advance_resumes_playback_when_next_song_exists():
+    room, (cur, _) = room_with(0, 1)
+    room.set_playing(False)
+    room.advance(cur.id)
+    assert room.snapshot().is_playing is True
