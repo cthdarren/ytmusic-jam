@@ -80,7 +80,24 @@ describe('QueueDrawer', () => {
     const { onRemove } = renderDrawer(night)
     fireEvent.click(screen.getByRole('button', { name: 'Remove U1' }))
     expect(onRemove).toHaveBeenCalledWith('u1')
-    expect(screen.queryByRole('button', { name: 'Remove P1' })).toBeNull()
+  })
+
+  it('played songs can be removed', () => {
+    const { onRemove } = renderDrawer(night)
+    fireEvent.click(screen.getByRole('button', { name: 'Remove P1' }))
+    expect(onRemove).toHaveBeenCalledWith('p1')
+  })
+
+  it('the playing song has no remove button', () => {
+    renderDrawer(night)
+    expect(screen.queryByRole('button', { name: 'Remove N' })).toBeNull()
+  })
+
+  it('every song in the night has a drag handle, including the one playing', () => {
+    renderDrawer(night)
+    for (const title of ['P1', 'P2', 'N', 'U1', 'U2']) {
+      expect(screen.getByRole('button', { name: `Drag ${title}` })).toBeInTheDocument()
+    }
   })
 
   /** Record which rows get scrolled to; restores the jsdom prototype afterwards. */

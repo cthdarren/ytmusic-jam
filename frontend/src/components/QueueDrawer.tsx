@@ -10,7 +10,7 @@ import {
 } from '@dnd-kit/core'
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { useEffect, useRef, useState } from 'react'
+import { type RefObject, useEffect, useRef, useState } from 'react'
 import type { QueueItem } from '../types'
 import { ConfirmDialog } from './ConfirmDialog'
 import { TrackInfo } from './TrackInfo'
@@ -28,20 +28,25 @@ interface Props {
   /** Songs already played tonight, oldest first. */
   played: QueueItem[]
   nowPlaying: QueueItem | null
-  /** Upcoming songs; the only part that can be dragged or removed. */
+  /** Upcoming songs. */
   items: QueueItem[]
   isOwner: boolean
   onClose: () => void
   onRemove: (id: string) => void
+  /** `toIndex` is a position in the whole night (played + playing + upcoming). */
   onMove: (id: string, toIndex: number) => void
   onPlay: (id: string) => void
   onClear: () => void
 }
 
-/** The whole night as one list: played songs, the current one, then the sortable upcoming queue. */
+/**
+ * The whole night as one sortable list: played songs, the one playing, then what's up next.
+ * Any song can be dragged anywhere; the song playing keeps playing, and whatever ends up
+ * above it counts as played while whatever is below it comes up next.
+ */
 export function QueueDrawer({ open, played, nowPlaying, items, isOwner, onClose, onRemove, onMove, onPlay, onClear }: Props) {
-  // Show a dropped item in its new spot immediately; it's dropped once a new `items` broadcast arrives.
-  const [pending, setPending] = useState<{ basis: QueueItem[]; order: string[] } | null>(null)
+  // Show a dropped song in its new spot immediately; it's dropped once a new broadcast arrives.
+  const [pending, setPending] = useState<{ basis: [QueueItem[], QueueItem | null, QueueItem[]]; order: string[] } | null>(null)
   const [confirmingClear, setConfirmingClear] = useState(false)
   // The row to open on: the current song, or the last one played once the night has finished.
   const anchorRef = useRef<HTMLLIElement>(null)
@@ -59,16 +64,21 @@ export function QueueDrawer({ open, played, nowPlaying, items, isOwner, onClose,
 
   if (!open) return null
 
-  const byId = new Map(items.map((i) => [i.id, i]))
-  const order = pending?.basis === items ? pending.order : items.map((i) => i.id)
-  const ids = order.filter((id) => byId.has(id))
-  const nightEmpty = played.length === 0 && nowPlaying === null && items.length === 0
+  const night = [...played, ...(nowPlaying ? [nowPlaying] : []), ...items]
+  const byId = new Map(night.map((i) => [i.id, i]))
+  const fresh = pending && pending.basis[0] === played && pending.basis[1] === nowPlaying && pending.basis[2] === items
+  const ids = (fresh ? pending.order : night.map((i) => i.id)).filter((id) => byId.has(id))
+  const currentIndex = nowPlaying ? ids.indexOf(nowPlaying.id) : ids.length
+  const nightEmpty = night.length === 0
+
+  const kindAt = (index: number): RowKind => (index < currentIndex ? 'played' : index === currentIndex ? 'current' : 'upcoming')
+  const isAnchor = (index: number) => (nowPlaying ? index === currentIndex : index === ids.length - 1)
 
   const handleDragEnd = ({ active, over }: DragEndEvent) => {
     if (!over) return
     const move = reorder(ids, String(active.id), String(over.id))
     if (!move) return
-    setPending({ basis: items, order: arrayMove(ids, ids.indexOf(move.id), move.toIndex) })
+    setPending({ basis: [played, nowPlaying, items], order: arrayMove(ids, ids.indexOf(move.id), move.toIndex) })
     onMove(move.id, move.toIndex)
   }
 
@@ -89,25 +99,17 @@ export function QueueDrawer({ open, played, nowPlaying, items, isOwner, onClose,
           <p className="empty">The queue is empty. Search for a song or paste a link to add one.</p>
         ) : (
           <ul className="queue-list">
-            {played.map((item, index) => (
-              <li
-                key={item.id}
-                ref={nowPlaying === null && index === played.length - 1 ? anchorRef : undefined}
-                className="queue-row played"
-              >
-                <PlayButton item={item} onPlay={onPlay} />
-              </li>
-            ))}
-            {nowPlaying ? (
-              <li ref={anchorRef} className="queue-row current" aria-current="true">
-                <TrackInfo track={nowPlaying.track} addedBy={nowPlaying.added_by} />
-                <span className="badge">Now playing</span>
-              </li>
-            ) : null}
             <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
               <SortableContext items={ids} strategy={verticalListSortingStrategy}>
-                {ids.map((id) => (
-                  <SortableRow key={id} item={byId.get(id)!} onRemove={onRemove} onPlay={onPlay} />
+                {ids.map((id, index) => (
+                  <SortableRow
+                    key={id}
+                    item={byId.get(id)!}
+                    kind={kindAt(index)}
+                    anchorRef={isAnchor(index) ? anchorRef : undefined}
+                    onRemove={onRemove}
+                    onPlay={onPlay}
+                  />
                 ))}
               </SortableContext>
             </DndContext>
@@ -139,14 +141,29 @@ function PlayButton({ item, onPlay }: { item: QueueItem; onPlay: (id: string) =>
   )
 }
 
-function SortableRow({ item, onRemove, onPlay }: { item: QueueItem; onRemove: (id: string) => void; onPlay: (id: string) => void }) {
+type RowKind = 'played' | 'current' | 'upcoming'
+
+interface RowProps {
+  item: QueueItem
+  kind: RowKind
+  anchorRef?: RefObject<HTMLLIElement | null>
+  onRemove: (id: string) => void
+  onPlay: (id: string) => void
+}
+
+function SortableRow({ item, kind, anchorRef, onRemove, onPlay }: RowProps) {
   const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({
     id: item.id,
   })
+  const ref = (el: HTMLLIElement | null) => {
+    setNodeRef(el)
+    if (anchorRef) anchorRef.current = el
+  }
   return (
     <li
-      ref={setNodeRef}
-      className={`queue-row${isDragging ? ' dragging' : ''}`}
+      ref={ref}
+      className={`queue-row ${kind}${isDragging ? ' dragging' : ''}`}
+      aria-current={kind === 'current' ? 'true' : undefined}
       style={{ transform: CSS.Transform.toString(transform), transition }}
     >
       <button
@@ -158,10 +175,19 @@ function SortableRow({ item, onRemove, onPlay }: { item: QueueItem; onRemove: (i
       >
         ⠿
       </button>
-      <PlayButton item={item} onPlay={onPlay} />
-      <button className="icon-btn" aria-label={`Remove ${item.track.title}`} onClick={() => onRemove(item.id)}>
-        ✕
-      </button>
+      {kind === 'current' ? (
+        <>
+          <TrackInfo track={item.track} addedBy={item.added_by} />
+          <span className="badge">Now playing</span>
+        </>
+      ) : (
+        <>
+          <PlayButton item={item} onPlay={onPlay} />
+          <button className="icon-btn" aria-label={`Remove ${item.track.title}`} onClick={() => onRemove(item.id)}>
+            ✕
+          </button>
+        </>
+      )}
     </li>
   )
 }

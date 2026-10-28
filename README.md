@@ -8,7 +8,9 @@ uses their phone to search, paste links and shuffle the shared queue around.
   same box to add it straight to the queue.
 - **Queue** button: the whole night in one list, with played songs dimmed above the
   one playing now. Tap any song to jump to it; playback carries on down the list from
-  there. Drag upcoming songs to reorder, ✕ to remove.
+  there. Drag any song (played, playing or upcoming) to reorder the night: the song
+  playing keeps playing, songs above it count as played and songs below it come up
+  next. ✕ removes a song (skip the one playing instead).
 - **Clear queue** (host only): wipes the night's list after a confirmation. The list
   is saved in `./data`, so it survives restarts (it comes back paused) and only this
   button clears it.
