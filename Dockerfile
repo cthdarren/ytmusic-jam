@@ -15,9 +15,10 @@ ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy PYTHONUNBUFFERED=1
 WORKDIR /app/backend
 COPY backend/pyproject.toml backend/uv.lock backend/.python-version ./
 RUN uv sync --frozen --no-dev
-# YouTube changes often and yt-dlp follows quickly: always ship its latest release.
+# YouTube changes often and yt-dlp follows quickly: always ship its latest release
+# (only yt-dlp itself; everything else stays at the locked versions).
 # `docker compose build --no-cache` picks up a newer one.
-RUN uv pip install --upgrade "yt-dlp[default]"
+RUN uv pip install --upgrade-package yt-dlp --upgrade-package yt-dlp-ejs "yt-dlp[default]"
 COPY backend/app ./app
 COPY --from=frontend /app/frontend/dist /app/frontend/dist
 
