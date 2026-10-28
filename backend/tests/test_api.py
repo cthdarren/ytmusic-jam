@@ -61,7 +61,7 @@ def test_move_reorders(client):
     for vid in ("aaaaaaaaaaa", "bbbbbbbbbbb", "ccccccccccc", "ddddddddddd"):
         state = add(client, vid).json()
     last = state["queue"][-1]
-    r = client.post(f"/api/queue/{last['id']}/move", json={"to_index": 0})
+    r = client.post(f"/api/queue/{last['id']}/move", json={"to_index": 1})
     assert [i["track"]["video_id"] for i in r.json()["queue"]] == ["ddddddddddd", "bbbbbbbbbbb", "ccccccccccc"]
 
 
@@ -277,3 +277,24 @@ def test_prefetch_failure_does_not_break_requests(client, fake_downloader):
     assert add(client, "aaaaaaaaaaa").status_code == 200
     assert wait_for(lambda: "aaaaaaaaaaa" in fake_downloader.downloaded())
     assert client.get("/api/state").status_code == 200
+
+
+def test_move_played_song_back_into_upcoming(client):
+    first = queue_three(client)  # played a, b; c playing
+    state = client.post(f"/api/queue/{first}/move", json={"to_index": 2}).json()
+    assert ids(state["played"]) == ["bbbbbbbbbbb"]
+    assert state["now_playing"]["track"]["video_id"] == "ccccccccccc"
+    assert ids(state["queue"]) == ["aaaaaaaaaaa"]
+
+
+def test_remove_current_returns_409(client):
+    current = add(client, ID).json()["now_playing"]["id"]
+    r = client.delete(f"/api/queue/{current}")
+    assert r.status_code == 409
+    assert r.json()["detail"] == "Skip the song that's playing instead of removing it"
+
+
+def test_remove_played_song_via_api(client):
+    first = queue_three(client)
+    state = client.delete(f"/api/queue/{first}").json()
+    assert ids(state["played"]) == ["bbbbbbbbbbb"]

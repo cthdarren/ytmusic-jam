@@ -49,16 +49,19 @@ def test_remove_unknown_raises():
 
 def test_move():
     room, (_, a, b, c) = room_with(0, 1, 2, 3)
-    room.move(c.id, 0)
+    room.move(c.id, 1)  # whole-night index: right after the song playing
     assert [i.id for i in room.snapshot().queue] == [c.id, a.id, b.id]
 
 
 def test_move_clamps_index():
-    room, (_, a, b, c) = room_with(0, 1, 2, 3)
+    room, (cur, a, b, c) = room_with(0, 1, 2, 3)
     room.move(a.id, 99)
-    assert [i.id for i in room.snapshot().queue] == [b.id, c.id, a.id]
+    assert order(room) == [cur.id, b.id, c.id, a.id]
     room.move(c.id, -5)
-    assert [i.id for i in room.snapshot().queue] == [c.id, b.id, a.id]
+    assert order(room) == [c.id, cur.id, b.id, a.id]
+    s = room.snapshot()
+    assert [i.id for i in s.played] == [c.id]
+    assert [i.id for i in s.queue] == [b.id, a.id]
 
 
 def test_move_unknown_raises():
@@ -216,13 +219,68 @@ def test_jump_resumes_when_paused():
     assert room.snapshot().is_playing is True
 
 
-def test_move_and_remove_ignore_played_ids():
-    room, (a, _, _) = room_with(0, 1, 2)
+def test_move_current_keeps_it_playing():
+    room, (a, b, c, d) = room_with(0, 1, 2, 3)
+    room.advance(a.id)  # [a] b [c d]
+    room.set_playing(False)
+    v = room.snapshot().version
+    room.move(b.id, 3)  # a c d b
+    s = room.snapshot()
+    assert s.now_playing.id == b.id
+    assert s.is_playing is False
+    assert [i.id for i in s.played] == [a.id, c.id, d.id]
+    assert s.queue == []
+    assert s.version == v + 1
+    room.move(b.id, 0)  # b a c d
+    s = room.snapshot()
+    assert s.now_playing.id == b.id
+    assert s.played == []
+    assert [i.id for i in s.queue] == [a.id, c.id, d.id]
+
+
+def test_move_played_song_after_current_makes_it_upcoming():
+    room, (a, b, c) = room_with(0, 1, 2)
+    room.advance(a.id)  # [a] b [c]
+    room.move(a.id, 2)  # b c a
+    s = room.snapshot()
+    assert s.played == []
+    assert s.now_playing.id == b.id
+    assert [i.id for i in s.queue] == [c.id, a.id]
+
+
+def test_move_upcoming_before_current_marks_it_played():
+    room, (a, b, c) = room_with(0, 1, 2)
+    room.move(c.id, 0)  # c a b
+    s = room.snapshot()
+    assert [i.id for i in s.played] == [c.id]
+    assert s.now_playing.id == a.id
+    assert [i.id for i in s.queue] == [b.id]
+
+
+def test_move_when_nothing_playing():
+    room, (a, b) = room_with(0, 1)
     room.advance(a.id)
-    with pytest.raises(KeyError):
-        room.move(a.id, 0)
-    with pytest.raises(KeyError):
+    room.advance(b.id)
+    room.move(b.id, 0)
+    s = room.snapshot()
+    assert [i.id for i in s.played] == [b.id, a.id]
+    assert s.now_playing is None and s.queue == []
+
+
+def test_remove_played_song():
+    room, (a, b, _) = room_with(0, 1, 2)
+    room.advance(a.id)
+    room.remove(a.id)
+    s = room.snapshot()
+    assert s.played == []
+    assert s.now_playing.id == b.id
+
+
+def test_remove_current_raises():
+    room, (a, _) = room_with(0, 1)
+    with pytest.raises(ValueError):
         room.remove(a.id)
+    assert room.snapshot().now_playing.id == a.id
 
 
 def test_clear_empties_everything():

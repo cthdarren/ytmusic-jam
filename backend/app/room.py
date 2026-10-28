@@ -37,13 +37,27 @@ class Room:
         return item
 
     def remove(self, item_id: str) -> None:
-        self.queue.pop(self._index(item_id))
-        self.version += 1
+        """Remove a played or upcoming song. The song playing has to be skipped instead."""
+        if self.now_playing is not None and self.now_playing.id == item_id:
+            raise ValueError("Can't remove the song that's playing")
+        for songs in (self.queue, self.played):
+            for i, item in enumerate(songs):
+                if item.id == item_id:
+                    songs.pop(i)
+                    self.version += 1
+                    return
+        raise KeyError(item_id)
 
     def move(self, item_id: str, to_index: int) -> None:
-        item = self.queue.pop(self._index(item_id))
-        to_index = max(0, min(to_index, len(self.queue)))
-        self.queue.insert(to_index, item)
+        """Move any song to `to_index` in the whole night (played + now playing + upcoming).
+
+        The song playing keeps playing wherever it lands: songs above it count as played,
+        songs below it come up next.
+        """
+        night = self._night()
+        item = night.pop(self._find(night, item_id))
+        night.insert(max(0, min(to_index, len(night))), item)
+        self._split_around_current(night)
         self.version += 1
 
     def advance(self, expected_item_id: str | None) -> bool:
@@ -71,13 +85,9 @@ class Room:
         """Play `item_id` from anywhere in the night; playback then carries on down the list."""
         if self.now_playing is not None and self.now_playing.id == item_id:
             return False
-        night = self.played + ([self.now_playing] if self.now_playing else []) + self.queue
-        index = next((i for i, item in enumerate(night) if item.id == item_id), None)
-        if index is None:
-            raise KeyError(item_id)
-        self.played = night[:index]
-        self.now_playing = night[index]
-        self.queue = night[index + 1:]
+        night = self._night()
+        self.now_playing = night[self._find(night, item_id)]
+        self._split_around_current(night)
         self.is_playing = True
         self.version += 1
         return True
@@ -132,8 +142,20 @@ class Room:
         self.queue = state.queue
         self.version = state.version
 
-    def _index(self, item_id: str) -> int:
-        for i, item in enumerate(self.queue):
+    def _night(self) -> list[QueueItem]:
+        return self.played + ([self.now_playing] if self.now_playing else []) + self.queue
+
+    @staticmethod
+    def _find(night: list[QueueItem], item_id: str) -> int:
+        for i, item in enumerate(night):
             if item.id == item_id:
                 return i
         raise KeyError(item_id)
+
+    def _split_around_current(self, night: list[QueueItem]) -> None:
+        """Re-derive played/upcoming from the night's order and the song playing."""
+        if self.now_playing is None:
+            self.played, self.queue = night, []
+            return
+        k = self._find(night, self.now_playing.id)
+        self.played, self.queue = night[:k], night[k + 1:]

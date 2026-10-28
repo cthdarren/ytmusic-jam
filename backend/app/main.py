@@ -215,6 +215,8 @@ def create_app(
     async def remove_from_queue(item_id: str) -> RoomState:
         try:
             room.remove(item_id)
+        except ValueError:
+            raise HTTPException(409, "Skip the song that's playing instead of removing it")
         except KeyError:
             raise HTTPException(404, "That song is no longer in the queue")
         return await changed()
