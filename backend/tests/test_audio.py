@@ -1,35 +1,12 @@
 import os
-import threading
-import time
 
 import anyio
 import pytest
 
 from app.audio import AudioCache, AudioUnavailable
+from tests.conftest import FakeDownloader
 
 pytestmark = pytest.mark.anyio
-
-
-class FakeDownloader:
-    """Writes `size` bytes as <id>.webm; records calls; can fail or be slow."""
-
-    def __init__(self, size=100, fail=(), delay=0.0):
-        self.size = size
-        self.fail = set(fail)
-        self.delay = delay
-        self.calls = []
-        self.lock = threading.Lock()
-
-    def __call__(self, video_id, dest_dir, cookies_file):
-        with self.lock:
-            self.calls.append((video_id, cookies_file))
-        if self.delay:
-            time.sleep(self.delay)
-        if video_id in self.fail:
-            raise AudioUnavailable(f"{video_id} is unavailable")
-        path = dest_dir / f"{video_id}.webm"
-        path.write_bytes(b"x" * self.size)
-        return path
 
 
 @pytest.fixture
@@ -47,7 +24,7 @@ async def test_ensure_downloads_once_then_serves_cache(tmp_path):
     first = await cache.ensure("aaaaaaaaaaa")
     second = await cache.ensure("aaaaaaaaaaa")
     assert first == second == tmp_path / "cache" / "aaaaaaaaaaa.webm"
-    assert first.read_bytes() == b"x" * 100
+    assert first.stat().st_size == 100
     assert len(dl.calls) == 1
     assert cache.cached("aaaaaaaaaaa") == first
 

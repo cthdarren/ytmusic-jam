@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from pathlib import Path
 from typing import Literal
@@ -7,15 +8,19 @@ from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
+from app.audio import AudioCache, AudioUnavailable, ytdlp_download
 from app.auth import COOKIE_NAME, SESSION_MAX_AGE, Auth, Role
 from app.hub import Hub
-from app.links import parse_video_id
+from app.links import VIDEO_ID_RE, parse_video_id
 from app.models import RoomState, Track
 from app.room import Room
 from app.settings import Settings
 from app.ytm import UpstreamError, YTMClient
 
 log = logging.getLogger(__name__)
+
+AUDIO_MEDIA_TYPES = {".webm": "audio/webm", ".opus": "audio/ogg", ".ogg": "audio/ogg",
+                     ".m4a": "audio/mp4", ".mp4": "audio/mp4", ".mp3": "audio/mpeg"}
 
 DEFAULT_STATIC_DIR = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 _DEFAULT = object()
@@ -47,6 +52,7 @@ def create_app(
     ytm: YTMClient | None = None,
     static_dir: Path | None | object = _DEFAULT,
     settings: Settings | None = None,
+    audio: AudioCache | None = None,
 ) -> FastAPI:
     """Build the app. Run in production with `uvicorn --factory app.main:create_app`."""
     if static_dir is _DEFAULT:
@@ -55,6 +61,14 @@ def create_app(
     ytm = ytm if ytm is not None else YTMClient()
     auth = Auth(settings)
     room = Room(settings.data_dir / "room.json")
+    if audio is None:
+        audio = AudioCache(
+            settings.data_dir / "audio-cache",
+            settings.cookies_file or settings.data_dir / "cookies.txt",
+            settings.audio_cache_mb * 1024 * 1024,
+            downloader=ytdlp_download,
+        )
+    background: set[asyncio.Task] = set()  # strong refs so prefetch tasks aren't garbage collected
     hub = Hub()
     app = FastAPI(title="YT Music Jam")
 
@@ -88,7 +102,24 @@ def create_app(
             log.exception("Couldn't save the room; carrying on with it in memory")
         state = room.snapshot()
         await hub.broadcast(state)
+        prefetch(state)
         return state
+
+    def prefetch(state: RoomState) -> None:
+        """Download the current and next song in the background so playback starts fast."""
+        wanted = [i.track.video_id for i in ([state.now_playing] if state.now_playing else []) + state.queue[:1]]
+
+        async def run() -> None:
+            for video_id in wanted:
+                try:
+                    await audio.ensure(video_id)
+                except Exception:
+                    log.warning("Couldn't prefetch audio for %s", video_id, exc_info=True)
+            audio.prune(keep=set(wanted))
+
+        task = asyncio.create_task(run())
+        background.add(task)
+        task.add_done_callback(background.discard)
 
     @app.post("/api/auth/login")
     async def login(body: LoginRequest, request: Request, response: Response) -> dict[str, str]:
@@ -136,6 +167,16 @@ def create_app(
             return await run_in_threadpool(ytm.search, q.strip(), kind)
         except UpstreamError as e:
             raise HTTPException(502, f"YouTube Music search failed: {e}")
+
+    @api.get("/api/audio/{video_id}")
+    async def audio_file(video_id: str) -> FileResponse:
+        if not VIDEO_ID_RE.fullmatch(video_id):
+            raise HTTPException(400, "Not a video id")
+        try:
+            path = await audio.ensure(video_id)
+        except AudioUnavailable:
+            raise HTTPException(404, "YouTube won't give us this song")
+        return FileResponse(path, media_type=AUDIO_MEDIA_TYPES.get(path.suffix, "application/octet-stream"))
 
     @api.get("/api/state")
     async def get_state() -> RoomState:

@@ -1,6 +1,10 @@
+import threading
+import time
+
 import pytest
 from fastapi.testclient import TestClient
 
+from app.audio import AudioUnavailable
 from app.main import create_app
 from app.models import Track
 from app.settings import Settings
@@ -22,6 +26,40 @@ class FakeYTM:
         if video_id == "missingvid0":
             raise LookupError("not found")
         return Track(video_id=video_id, title=f"T-{video_id}", artist="Artist")
+
+
+class FakeDownloader:
+    """Stands in for yt-dlp: writes `size` bytes as <id>.webm, records calls, can fail or be slow."""
+
+    def __init__(self, size=100, fail=(), delay=0.0):
+        self.size = size
+        self.fail = set(fail)
+        self.delay = delay
+        self.calls = []
+        self.lock = threading.Lock()
+
+    def __call__(self, video_id, dest_dir, cookies_file):
+        with self.lock:
+            self.calls.append((video_id, cookies_file))
+        if self.delay:
+            time.sleep(self.delay)
+        if video_id in self.fail:
+            raise AudioUnavailable(f"{video_id} is unavailable")
+        path = dest_dir / f"{video_id}.webm"
+        path.write_bytes(bytes(range(256)) * (self.size // 256) + bytes(self.size % 256))
+        return path
+
+    def downloaded(self):
+        with self.lock:
+            return {vid for vid, _ in self.calls}
+
+
+@pytest.fixture(autouse=True)
+def fake_downloader(monkeypatch):
+    """Never run the real yt-dlp in tests: every app gets this fake downloader."""
+    fake = FakeDownloader(size=1000)
+    monkeypatch.setattr("app.main.ytdlp_download", fake)
+    return fake
 
 
 @pytest.fixture

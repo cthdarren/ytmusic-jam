@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
@@ -171,3 +173,18 @@ def test_settings_from_env(monkeypatch, tmp_path):
     monkeypatch.setenv("JAM_DATA_DIR", str(tmp_path))
     s = Settings.from_env()
     assert (s.username, s.password, s.cookie_secure, s.data_dir) == ("me", "pw", True, tmp_path)
+
+
+def test_settings_cookie_and_cache_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("JAM_USERNAME", "me")
+    monkeypatch.setenv("JAM_PASSWORD", "pw")
+    monkeypatch.setenv("JAM_SECRET", "x" * 32)
+    monkeypatch.setenv("JAM_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("JAM_COOKIES_FILE", raising=False)
+    monkeypatch.delenv("JAM_AUDIO_CACHE_MB", raising=False)
+    s = Settings.from_env()
+    assert (s.cookies_file, s.audio_cache_mb) == (tmp_path / "cookies.txt", 500)
+    monkeypatch.setenv("JAM_COOKIES_FILE", "/secrets/yt.txt")
+    monkeypatch.setenv("JAM_AUDIO_CACHE_MB", "200")
+    s = Settings.from_env()
+    assert (s.cookies_file, s.audio_cache_mb) == (Path("/secrets/yt.txt"), 200)

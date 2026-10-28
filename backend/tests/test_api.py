@@ -223,3 +223,57 @@ def test_failed_save_still_succeeds_and_broadcasts(settings):
             r = add(c, ID)
             assert r.status_code == 200
             assert ws.receive_json()["state"]["now_playing"]["track"]["video_id"] == ID
+
+
+def wait_for(condition, timeout=3.0):
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if condition():
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def test_audio_serves_file_with_ranges(client):
+    r = client.get(f"/api/audio/{ID}")
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "audio/webm"
+    assert r.headers["accept-ranges"] == "bytes"
+    assert len(r.content) == 1000
+    r = client.get(f"/api/audio/{ID}", headers={"Range": "bytes=0-9"})
+    assert r.status_code == 206
+    assert r.content == bytes(range(10))
+
+
+def test_audio_requires_session(anon_client):
+    assert anon_client.get(f"/api/audio/{ID}").status_code == 401
+
+
+def test_audio_rejects_bad_ids(client, fake_downloader):
+    for bad in ("short", "aaaaaaaaaaaa", "aaaa.aaaaaa", "..%2f..%2fetc"):
+        assert client.get(f"/api/audio/{bad}").status_code in (400, 404), bad
+    assert fake_downloader.calls == []
+
+
+def test_audio_unavailable_returns_404(client, fake_downloader):
+    fake_downloader.fail.add("bbbbbbbbbbb")
+    r = client.get("/api/audio/bbbbbbbbbbb")
+    assert r.status_code == 404
+    assert r.json()["detail"] == "YouTube won't give us this song"
+
+
+def test_change_prefetches_current_and_next(client, fake_downloader):
+    add(client, "aaaaaaaaaaa")
+    add(client, "bbbbbbbbbbb")
+    add(client, "ccccccccccc")
+    assert wait_for(lambda: fake_downloader.downloaded() >= {"aaaaaaaaaaa", "bbbbbbbbbbb"})
+    assert "ccccccccccc" not in fake_downloader.downloaded()
+
+
+def test_prefetch_failure_does_not_break_requests(client, fake_downloader):
+    fake_downloader.fail.add("aaaaaaaaaaa")
+    assert add(client, "aaaaaaaaaaa").status_code == 200
+    assert wait_for(lambda: "aaaaaaaaaaa" in fake_downloader.downloaded())
+    assert client.get("/api/state").status_code == 200
