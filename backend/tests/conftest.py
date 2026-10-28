@@ -4,7 +4,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from app.audio import AudioUnavailable
+from app.audio import AudioPaused, AudioUnavailable
 from app.main import create_app
 from app.models import Track
 from app.settings import Settings
@@ -37,12 +37,26 @@ class FakeDownloader:
         self.delay = delay
         self.calls = []
         self.lock = threading.Lock()
+        self.active = 0
+        self.max_active = 0  # most downloads seen running at the same time
+        self.paused = []  # downloads stopped through their cancel event
 
-    def __call__(self, video_id, dest_dir, cookies_file):
+    def __call__(self, video_id, dest_dir, cookies_file, cancel=None):
         with self.lock:
             self.calls.append((video_id, cookies_file))
-        if self.delay:
-            time.sleep(self.delay)
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+        try:
+            deadline = time.monotonic() + self.delay
+            while time.monotonic() < deadline:
+                if cancel is not None and cancel.is_set():
+                    with self.lock:
+                        self.paused.append(video_id)
+                    raise AudioPaused(video_id)
+                time.sleep(0.01)
+        finally:
+            with self.lock:
+                self.active -= 1
         if video_id in self.fail:
             raise AudioUnavailable(f"{video_id} is unavailable")
         path = dest_dir / f"{video_id}.webm"
@@ -89,3 +103,12 @@ def client(anon_client):
     """A client logged in as the owner."""
     login(anon_client)
     return anon_client
+
+
+def next_state(ws, limit=20):
+    """Read websocket messages until a room "state" arrives (skipping "ready" updates)."""
+    for _ in range(limit):
+        msg = ws.receive_json()
+        if msg["type"] == "state":
+            return msg
+    raise AssertionError("no state message")

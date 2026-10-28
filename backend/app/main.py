@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -9,7 +10,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
-from app.audio import AudioCache, AudioUnavailable, Preloader, ytdlp_download
+from app.audio import AudioCache, AudioPaused, AudioUnavailable, Preloader, ytdlp_download
 from app.auth import COOKIE_NAME, SESSION_MAX_AGE, Auth, Role
 from app.hub import Hub
 from app.links import VIDEO_ID_RE, parse_video_id
@@ -38,6 +39,9 @@ class MoveRequest(BaseModel):
 
 class NextRequest(BaseModel):
     expected_item_id: str | None = None
+    # True when someone pressed Skip (not when a song simply ended): downloads refocus on
+    # the new playing/next songs.
+    manual: bool = False
 
 
 class PlayingRequest(BaseModel):
@@ -69,8 +73,27 @@ def create_app(
             settings.audio_cache_mb * 1024 * 1024,
             downloader=ytdlp_download,
         )
-    preloader = Preloader(audio)
+    preloader = Preloader(audio, concurrency=settings.preload_workers)
     hub = Hub()
+
+    # Tell everyone which songs are downloaded (start instantly) whenever that changes.
+    last_ready: set[str] = audio.ready_ids()
+    background: set[asyncio.Task] = set()
+
+    def ready_message(ids: set[str]) -> dict:
+        return {"type": "ready", "video_ids": sorted(ids)}
+
+    def on_audio_change() -> None:
+        nonlocal last_ready
+        ids = audio.ready_ids()
+        if ids == last_ready:
+            return
+        last_ready = ids
+        task = asyncio.get_running_loop().create_task(hub.broadcast_message(ready_message(ids)))
+        background.add(task)
+        task.add_done_callback(background.discard)
+
+    audio.on_change = on_audio_change
 
     def preload(state: RoomState) -> None:
         """Keep the song playing and the next few downloaded, nearest first."""
@@ -173,6 +196,9 @@ def create_app(
             path = await audio.ensure(video_id)
         except AudioUnavailable:
             raise HTTPException(404, "YouTube won't give us this song")
+        except AudioPaused:
+            # Only songs that are no longer playing or next get paused, so the host has moved on.
+            raise HTTPException(503, "That song's download was paused for a more urgent one")
         return FileResponse(path, media_type=AUDIO_MEDIA_TYPES.get(path.suffix, "application/octet-stream"))
 
     @api.get("/api/state")
@@ -209,7 +235,11 @@ def create_app(
             jumped = room.jump(item_id)
         except KeyError:
             raise HTTPException(404, "That song is no longer in the queue")
-        return await changed() if jumped else room.snapshot()
+        if not jumped:
+            return room.snapshot()
+        state = await changed()
+        preloader.refocus()  # a tap is a manual song change: get the new next song ready first
+        return state
 
     @api.delete("/api/queue/{item_id}")
     async def remove_from_queue(item_id: str) -> RoomState:
@@ -231,9 +261,12 @@ def create_app(
 
     @api.post("/api/player/next")
     async def next_song(body: NextRequest) -> RoomState:
-        if room.advance(body.expected_item_id):
-            return await changed()
-        return room.snapshot()
+        if not room.advance(body.expected_item_id):
+            return room.snapshot()
+        state = await changed()
+        if body.manual:
+            preloader.refocus()
+        return state
 
     @api.post("/api/player/playing")
     async def set_playing(body: PlayingRequest) -> RoomState:
@@ -256,6 +289,7 @@ def create_app(
         hub.connect(ws, role)
         try:
             await hub.send_state(ws, room.snapshot())
+            await hub.send_message(ws, ready_message(audio.ready_ids()))
             while True:
                 await ws.receive_text()
         except WebSocketDisconnect:

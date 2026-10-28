@@ -83,8 +83,9 @@ export const playItem = (id: string) =>
 
 export const clearQueue = () => request<RoomState>('/api/queue/clear', { method: 'POST' })
 
-export const next = (expectedItemId: string | null) =>
-  request<RoomState>('/api/player/next', { method: 'POST', body: { expected_item_id: expectedItemId } })
+/** `manual` = someone pressed Skip (the host's own "song ended" is not manual). */
+export const next = (expectedItemId: string | null, manual = false) =>
+  request<RoomState>('/api/player/next', { method: 'POST', body: { expected_item_id: expectedItemId, manual } })
 
 export const setPlaying = (playing: boolean) =>
   request<RoomState>('/api/player/playing', { method: 'POST', body: { playing } })

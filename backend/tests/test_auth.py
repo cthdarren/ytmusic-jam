@@ -6,7 +6,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from app.main import create_app
 from app.settings import Settings
-from tests.conftest import OWNER, FakeYTM, join_url_token, login
+from tests.conftest import OWNER, FakeYTM, join_url_token, login, next_state
 
 
 def use_cookie(client: TestClient, value: str) -> None:
@@ -140,10 +140,10 @@ def test_reset_closes_guest_websockets(anon_client):
             owner_ws.receive_json()
             anon_client.post("/api/join/reset")
             with pytest.raises(WebSocketDisconnect) as exc:
-                guest_ws.receive_json()
+                next_state(guest_ws)  # skips any "ready" update before the close
             assert exc.value.code == 4401
             anon_client.post("/api/queue", json={"input": "dQw4w9WgXcQ"})
-            assert owner_ws.receive_json()["state"]["version"] == 1
+            assert next_state(owner_ws)["state"]["version"] == 1
 
 
 def test_join_token_persists_across_app_instances(settings):
@@ -183,10 +183,12 @@ def test_settings_cookie_and_cache_env(monkeypatch, tmp_path):
     monkeypatch.delenv("JAM_COOKIES_FILE", raising=False)
     monkeypatch.delenv("JAM_AUDIO_CACHE_MB", raising=False)
     monkeypatch.delenv("JAM_PRELOAD_SONGS", raising=False)
+    monkeypatch.delenv("JAM_PRELOAD_WORKERS", raising=False)
     s = Settings.from_env()
-    assert (s.cookies_file, s.audio_cache_mb, s.preload_songs) == (tmp_path / "cookies.txt", 500, 20)
+    assert (s.cookies_file, s.audio_cache_mb, s.preload_songs, s.preload_workers) == (tmp_path / "cookies.txt", 500, 20, 4)
     monkeypatch.setenv("JAM_COOKIES_FILE", "/secrets/yt.txt")
     monkeypatch.setenv("JAM_AUDIO_CACHE_MB", "200")
     monkeypatch.setenv("JAM_PRELOAD_SONGS", "5")
+    monkeypatch.setenv("JAM_PRELOAD_WORKERS", "6")
     s = Settings.from_env()
-    assert (s.cookies_file, s.audio_cache_mb, s.preload_songs) == (Path("/secrets/yt.txt"), 200, 5)
+    assert (s.cookies_file, s.audio_cache_mb, s.preload_songs, s.preload_workers) == (Path("/secrets/yt.txt"), 200, 5, 6)

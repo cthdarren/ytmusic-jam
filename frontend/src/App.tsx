@@ -7,6 +7,7 @@ import { NowPlaying } from './components/NowPlaying'
 import { QueueDrawer } from './components/QueueDrawer'
 import { SearchBar } from './components/SearchBar'
 import { SearchResults } from './components/SearchResults'
+import { TopBar } from './components/TopBar'
 import type { Role, SearchKind, Track } from './types'
 import { useRoom } from './useRoom'
 
@@ -59,7 +60,7 @@ export default function App() {
 
 function Jam({ role, onLoggedOut }: { role: Role; onLoggedOut: () => void }) {
   const isHost = location.pathname === '/host'
-  const { state, connected } = useRoom()
+  const { state, connected, ready } = useRoom()
   const [nickname, setNickname] = useState<string | null>(loadNickname)
   const [results, setResults] = useState<Track[] | null>(null)
   const [searching, setSearching] = useState(false)
@@ -113,20 +114,13 @@ function Jam({ role, onLoggedOut }: { role: Role; onLoggedOut: () => void }) {
 
   return (
     <div className="app">
-      <header className="topbar">
-        <h1>YT Music Jam</h1>
-        <div className="topbar-actions">
-          {role === 'owner' ? (
-            <>
-              <button onClick={() => setInviteOpen(true)}>Invite</button>
-              {isHost ? null : <a className="button" href="/host">Open player</a>}
-              <button onClick={() => run(api.logout).then(onLoggedOut)}>Log out</button>
-            </>
-          ) : (
-            <span className="muted small">Jamming as {nickname}</span>
-          )}
-        </div>
-      </header>
+      <TopBar
+        role={role}
+        nickname={nickname}
+        isHost={isHost}
+        onInvite={() => setInviteOpen(true)}
+        onLogout={() => run(api.logout).then(onLoggedOut)}
+      />
 
       {isHost ? <HostPlayer state={state} onError={showError} /> : null}
 
@@ -138,7 +132,7 @@ function Jam({ role, onLoggedOut }: { role: Role; onLoggedOut: () => void }) {
       <NowPlaying
         state={state}
         connected={connected}
-        onSkip={() => current && run(() => api.next(current.id))}
+        onSkip={() => current && run(() => api.next(current.id, true))}
         onTogglePlay={() => state && run(() => api.setPlaying(!state.is_playing))}
         onOpenQueue={() => setQueueOpen(true)}
       />
@@ -154,6 +148,7 @@ function Jam({ role, onLoggedOut }: { role: Role; onLoggedOut: () => void }) {
         onMove={(id, toIndex) => run(() => api.moveItem(id, toIndex))}
         onPlay={(id) => run(() => api.playItem(id))}
         onClear={() => run(api.clearQueue)}
+        ready={ready}
       />
 
       {inviteOpen ? <InviteDialog onClose={() => setInviteOpen(false)} onError={showError} /> : null}

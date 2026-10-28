@@ -37,6 +37,8 @@ interface Props {
   onMove: (id: string, toIndex: number) => void
   onPlay: (id: string) => void
   onClear: () => void
+  /** Video ids already downloaded on the server: these start instantly. */
+  ready: Set<string>
 }
 
 /**
@@ -44,7 +46,7 @@ interface Props {
  * Any song can be dragged anywhere; the song playing keeps playing, and whatever ends up
  * above it counts as played while whatever is below it comes up next.
  */
-export function QueueDrawer({ open, played, nowPlaying, items, isOwner, onClose, onRemove, onMove, onPlay, onClear }: Props) {
+export function QueueDrawer({ open, played, nowPlaying, items, isOwner, onClose, onRemove, onMove, onPlay, onClear, ready }: Props) {
   // Show a dropped song in its new spot immediately; it's dropped once a new broadcast arrives.
   const [pending, setPending] = useState<{ basis: [QueueItem[], QueueItem | null, QueueItem[]]; order: string[] } | null>(null)
   const [confirmingClear, setConfirmingClear] = useState(false)
@@ -98,22 +100,29 @@ export function QueueDrawer({ open, played, nowPlaying, items, isOwner, onClose,
         {nightEmpty ? (
           <p className="empty">The queue is empty. Search for a song or paste a link to add one.</p>
         ) : (
-          <ul className="queue-list">
-            <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-              <SortableContext items={ids} strategy={verticalListSortingStrategy}>
-                {ids.map((id, index) => (
-                  <SortableRow
-                    key={id}
-                    item={byId.get(id)!}
-                    kind={kindAt(index)}
-                    anchorRef={isAnchor(index) ? anchorRef : undefined}
-                    onRemove={onRemove}
-                    onPlay={onPlay}
-                  />
-                ))}
-              </SortableContext>
-            </DndContext>
-          </ul>
+          <>
+            <p className="legend muted small">
+              <span className="status-dot ready" aria-hidden /> ready to play instantly
+              <span className="status-dot" aria-hidden /> downloading
+            </p>
+            <ul className="queue-list">
+              <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+                <SortableContext items={ids} strategy={verticalListSortingStrategy}>
+                  {ids.map((id, index) => (
+                    <SortableRow
+                      key={id}
+                      item={byId.get(id)!}
+                      kind={kindAt(index)}
+                      isReady={ready.has(byId.get(id)!.track.video_id)}
+                      anchorRef={isAnchor(index) ? anchorRef : undefined}
+                      onRemove={onRemove}
+                      onPlay={onPlay}
+                    />
+                  ))}
+                </SortableContext>
+              </DndContext>
+            </ul>
+          </>
         )}
       </section>
       {confirmingClear ? (
@@ -146,12 +155,13 @@ type RowKind = 'played' | 'current' | 'upcoming'
 interface RowProps {
   item: QueueItem
   kind: RowKind
+  isReady: boolean
   anchorRef?: RefObject<HTMLLIElement | null>
   onRemove: (id: string) => void
   onPlay: (id: string) => void
 }
 
-function SortableRow({ item, kind, anchorRef, onRemove, onPlay }: RowProps) {
+function SortableRow({ item, kind, isReady, anchorRef, onRemove, onPlay }: RowProps) {
   const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({
     id: item.id,
   })
@@ -175,6 +185,12 @@ function SortableRow({ item, kind, anchorRef, onRemove, onPlay }: RowProps) {
       >
         ⠿
       </button>
+      <span
+        className={isReady ? 'status-dot ready' : 'status-dot'}
+        role="img"
+        aria-label={isReady ? 'Ready to play' : 'Downloading…'}
+        title={isReady ? 'Ready to play' : 'Downloading…'}
+      />
       {kind === 'current' ? (
         <>
           <TrackInfo track={item.track} addedBy={item.added_by} />
