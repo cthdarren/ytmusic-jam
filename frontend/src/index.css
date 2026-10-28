@@ -476,6 +476,31 @@ button:focus-visible {
   justify-content: flex-end;
 }
 
+/* Filled = downloaded on the server and will start instantly; hollow = still downloading. */
+.status-dot {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1.5px solid var(--muted);
+}
+
+.legend {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0 0 0.3rem;
+}
+
+.legend .status-dot:last-of-type {
+  margin-left: 0.6rem;
+}
+
+.status-dot.ready {
+  background: #2fbf71;
+  border-color: #2fbf71;
+}
+
 .queue-row.dragging {
   position: relative;
   z-index: 1;

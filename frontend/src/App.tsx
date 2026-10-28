@@ -60,7 +60,7 @@ export default function App() {
 
 function Jam({ role, onLoggedOut }: { role: Role; onLoggedOut: () => void }) {
   const isHost = location.pathname === '/host'
-  const { state, connected } = useRoom()
+  const { state, connected, ready } = useRoom()
   const [nickname, setNickname] = useState<string | null>(loadNickname)
   const [results, setResults] = useState<Track[] | null>(null)
   const [searching, setSearching] = useState(false)
@@ -148,6 +148,7 @@ function Jam({ role, onLoggedOut }: { role: Role; onLoggedOut: () => void }) {
         onMove={(id, toIndex) => run(() => api.moveItem(id, toIndex))}
         onPlay={(id) => run(() => api.playItem(id))}
         onClear={() => run(api.clearQueue)}
+        ready={ready}
       />
 
       {inviteOpen ? <InviteDialog onClose={() => setInviteOpen(false)} onError={showError} /> : null}

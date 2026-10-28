@@ -35,6 +35,7 @@ function renderDrawer(overrides: Partial<DrawerProps> = {}) {
     onMove: vi.fn(),
     onPlay: vi.fn(),
     onClear: vi.fn(),
+    ready: new Set<string>(),
     ...overrides,
   }
   render(<QueueDrawer {...props} />)
@@ -152,6 +153,15 @@ describe('QueueDrawer', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Clear everything' }))
     expect(onClear).toHaveBeenCalledTimes(1)
     expect(screen.queryByRole('alertdialog')).toBeNull()
+  })
+
+  it('rows show which songs are ready to play', () => {
+    const ready = new Set([night.played[0].track.video_id, night.items[0].track.video_id])
+    renderDrawer({ ...night, ready })
+    const rows = screen.getAllByRole('listitem')
+    const status = rows.map((row) => within(row).getByRole('img').getAttribute('aria-label'))
+    expect(status).toEqual(['Ready to play', 'Downloading…', 'Downloading…', 'Ready to play', 'Downloading…'])
+    expect(screen.getByText(/ready to play instantly/i)).toBeInTheDocument()
   })
 
   it('shows the empty message when the night is empty', () => {
