@@ -1,5 +1,6 @@
 import { type FormEvent, useCallback, useEffect, useState } from 'react'
 import * as api from './api'
+import { HostPlayer } from './components/HostPlayer'
 import { InviteDialog } from './components/InviteDialog'
 import { LoginScreen } from './components/LoginScreen'
 import { NowPlaying } from './components/NowPlaying'
@@ -126,6 +127,8 @@ function Jam({ role, onLoggedOut }: { role: Role; onLoggedOut: () => void }) {
           )}
         </div>
       </header>
+
+      {isHost ? <HostPlayer state={state} onError={showError} /> : null}
 
       <main className="content">
         <SearchBar busy={searching} onSearch={doSearch} onAddLink={addLink} />

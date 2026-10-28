@@ -10,7 +10,7 @@ import {
 } from '@dnd-kit/core'
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import type { QueueItem } from '../types'
 import { TrackInfo } from './TrackInfo'
 
@@ -31,9 +31,8 @@ interface Props {
 }
 
 export function QueueDrawer({ open, items, onClose, onRemove, onMove }: Props) {
-  // Show a dropped item in its new spot immediately; the next broadcast replaces this.
-  const [pendingOrder, setPendingOrder] = useState<string[] | null>(null)
-  useEffect(() => setPendingOrder(null), [items])
+  // Show a dropped item in its new spot immediately; it's dropped once a new `items` broadcast arrives.
+  const [pending, setPending] = useState<{ basis: QueueItem[]; order: string[] } | null>(null)
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
@@ -44,13 +43,14 @@ export function QueueDrawer({ open, items, onClose, onRemove, onMove }: Props) {
   if (!open) return null
 
   const byId = new Map(items.map((i) => [i.id, i]))
-  const ids = (pendingOrder ?? items.map((i) => i.id)).filter((id) => byId.has(id))
+  const order = pending?.basis === items ? pending.order : items.map((i) => i.id)
+  const ids = order.filter((id) => byId.has(id))
 
   const handleDragEnd = ({ active, over }: DragEndEvent) => {
     if (!over) return
     const move = reorder(ids, String(active.id), String(over.id))
     if (!move) return
-    setPendingOrder(arrayMove(ids, ids.indexOf(move.id), move.toIndex))
+    setPending({ basis: items, order: arrayMove(ids, ids.indexOf(move.id), move.toIndex) })
     onMove(move.id, move.toIndex)
   }
 
