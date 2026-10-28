@@ -16,6 +16,8 @@ class Settings:
     # None means data_dir / "cookies.txt". Used only if the file exists.
     cookies_file: Path | None = None
     audio_cache_mb: int = 500
+    # Upcoming songs kept downloaded ahead of time (on top of the one playing).
+    preload_songs: int = 20
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -31,4 +33,5 @@ class Settings:
             data_dir=data_dir,
             cookies_file=Path(os.environ.get("JAM_COOKIES_FILE") or data_dir / "cookies.txt"),
             audio_cache_mb=int(os.environ.get("JAM_AUDIO_CACHE_MB") or 500),
+            preload_songs=int(os.environ.get("JAM_PRELOAD_SONGS") or 20),
         )

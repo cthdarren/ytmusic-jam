@@ -40,8 +40,9 @@ The server fetches each song's audio with [yt-dlp](https://github.com/yt-dlp/yt-
 and the player page plays it. Only audio is downloaded, so it uses far less bandwidth
 than video and there are no ads. Songs that labels block from playing outside
 YouTube (common with official "Topic" audio tracks) work too. The current and next
-songs are fetched ahead of time. The first song after a quiet spell can take a few
-seconds to start.
+upcoming songs (20 by default, `JAM_PRELOAD_SONGS`) are downloaded ahead of time,
+nearest first, so skips and jumps start straight away. The first song after a quiet
+spell can take a few seconds to start.
 
 ### Use your YouTube Premium account (recommended)
 
@@ -70,8 +71,9 @@ installs the newest yt-dlp:
 docker compose build --no-cache && docker compose up -d
 ```
 
-Downloaded songs are kept in `./data/audio-cache` (500 MB by default, set
-`JAM_AUDIO_CACHE_MB`); the least recently played are deleted first.
+Downloaded songs are short-term: they live in `./data/audio-cache` (500 MB by
+default, set `JAM_AUDIO_CACHE_MB`), the least recently played are deleted first,
+anything unused for a day is deleted, and **Clear queue** empties it.
 
 ## Security notes
 

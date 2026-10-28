@@ -1,5 +1,6 @@
-import asyncio
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 
@@ -8,7 +9,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
-from app.audio import AudioCache, AudioUnavailable, ytdlp_download
+from app.audio import AudioCache, AudioUnavailable, Preloader, ytdlp_download
 from app.auth import COOKIE_NAME, SESSION_MAX_AGE, Auth, Role
 from app.hub import Hub
 from app.links import VIDEO_ID_RE, parse_video_id
@@ -68,9 +69,15 @@ def create_app(
             settings.audio_cache_mb * 1024 * 1024,
             downloader=ytdlp_download,
         )
-    background: set[asyncio.Task] = set()  # strong refs so prefetch tasks aren't garbage collected
+    preloader = Preloader(audio)
     hub = Hub()
-    app = FastAPI(title="YT Music Jam")
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        yield
+        await preloader.close()
+
+    app = FastAPI(title="YT Music Jam", lifespan=lifespan)
 
     def session_role(request: Request) -> Role:
         role = auth.read_cookie(request.cookies.get(COOKIE_NAME))
@@ -102,24 +109,10 @@ def create_app(
             log.exception("Couldn't save the room; carrying on with it in memory")
         state = room.snapshot()
         await hub.broadcast(state)
-        prefetch(state)
+        # Keep the song playing and the next few downloaded, nearest first.
+        upcoming = ([state.now_playing] if state.now_playing else []) + state.queue[: settings.preload_songs]
+        preloader.update([item.track.video_id for item in upcoming])
         return state
-
-    def prefetch(state: RoomState) -> None:
-        """Download the current and next song in the background so playback starts fast."""
-        wanted = [i.track.video_id for i in ([state.now_playing] if state.now_playing else []) + state.queue[:1]]
-
-        async def run() -> None:
-            for video_id in wanted:
-                try:
-                    await audio.ensure(video_id)
-                except Exception:
-                    log.warning("Couldn't prefetch audio for %s", video_id, exc_info=True)
-            audio.prune(keep=set(wanted))
-
-        task = asyncio.create_task(run())
-        background.add(task)
-        task.add_done_callback(background.discard)
 
     @app.post("/api/auth/login")
     async def login(body: LoginRequest, request: Request, response: Response) -> dict[str, str]:
@@ -201,7 +194,9 @@ def create_app(
     @api.post("/api/queue/clear", dependencies=[Depends(require_owner)])
     async def clear_queue() -> RoomState:
         room.clear()
-        return await changed()
+        state = await changed()
+        audio.clear()  # downloads are short-term: a new night starts with an empty cache
+        return state
 
     @api.post("/api/queue/{item_id}/play")
     async def play_item(item_id: str) -> RoomState:

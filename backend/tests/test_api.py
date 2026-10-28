@@ -264,12 +264,41 @@ def test_audio_unavailable_returns_404(client, fake_downloader):
     assert r.json()["detail"] == "YouTube won't give us this song"
 
 
-def test_change_prefetches_current_and_next(client, fake_downloader):
-    add(client, "aaaaaaaaaaa")
-    add(client, "bbbbbbbbbbb")
-    add(client, "ccccccccccc")
-    assert wait_for(lambda: fake_downloader.downloaded() >= {"aaaaaaaaaaa", "bbbbbbbbbbb"})
-    assert "ccccccccccc" not in fake_downloader.downloaded()
+SONGS = ["aaaaaaaaaaa", "bbbbbbbbbbb", "ccccccccccc", "ddddddddddd", "eeeeeeeeeee"]
+
+
+def test_change_preloads_upcoming_songs(client, fake_downloader):
+    for vid in SONGS:
+        add(client, vid)
+    assert wait_for(lambda: fake_downloader.downloaded() == set(SONGS))
+
+
+def test_preload_count_respected(settings, fake_downloader):
+    from dataclasses import replace
+
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+    from tests.conftest import FakeYTM, login
+
+    with TestClient(create_app(ytm=FakeYTM(), static_dir=None, settings=replace(settings, preload_songs=2))) as c:
+        login(c)
+        for vid in SONGS:
+            add(c, vid)
+        assert wait_for(lambda: fake_downloader.downloaded() >= set(SONGS[:3]))
+        import time
+
+        time.sleep(0.2)
+        assert fake_downloader.downloaded() == set(SONGS[:3])  # the song playing + 2 upcoming
+
+
+def test_clear_empties_audio_cache(client, settings, fake_downloader):
+    for vid in SONGS[:2]:
+        add(client, vid)
+    cache_dir = settings.data_dir / "audio-cache"
+    assert wait_for(lambda: len(list(cache_dir.glob("*.webm"))) == 2)
+    client.post("/api/queue/clear")
+    assert list(cache_dir.glob("*.webm")) == []
 
 
 def test_prefetch_failure_does_not_break_requests(client, fake_downloader):
