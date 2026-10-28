@@ -1,10 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { next, setPlaying } from '../api'
 import {
-  ENDED,
+  audioUrl,
   onPlayerEvent,
-  PAUSED,
-  PLAYING,
   type PlayerEvent,
   REPORT_DELAY_MS,
   shouldReportPause,
@@ -12,159 +10,130 @@ import {
 } from '../hostPlayerLogic'
 import type { RoomState } from '../types'
 
-declare global {
-  interface Window {
-    onYouTubeIframeAPIReady?: () => void
-  }
-}
-
-let apiPromise: Promise<void> | null = null
-
-function loadYouTubeApi(): Promise<void> {
-  if (window.YT?.Player) return Promise.resolve()
-  apiPromise ??= new Promise((resolve, reject) => {
-    const previous = window.onYouTubeIframeAPIReady
-    window.onYouTubeIframeAPIReady = () => {
-      previous?.()
-      resolve()
-    }
-    const script = document.createElement('script')
-    script.src = 'https://www.youtube.com/iframe_api'
-    script.onerror = () => {
-      apiPromise = null
-      reject(new Error("Couldn't load the YouTube player"))
-    }
-    document.head.appendChild(script)
-  })
-  return apiPromise
-}
-
 /**
- * The speaker: plays whatever the room says is now playing and reports back when a
- * song ends, fails, or is paused/resumed from the player's own controls.
+ * The speaker: plays the room's current song from the server (which fetches it with yt-dlp)
+ * and reports back when a song ends, fails, or is paused/resumed on this device.
  */
 export function HostPlayer({ state, onError }: { state: RoomState | null; onError: (msg: string) => void }) {
   const [started, setStarted] = useState(false)
-  const [ready, setReady] = useState(false)
-  const mountRef = useRef<HTMLDivElement>(null)
-  const playerRef = useRef<YT.Player | null>(null)
+  const [loading, setLoading] = useState(false)
+  const audioRef = useRef<HTMLAudioElement>(null)
+  // The queue item whose audio is loaded; events are reported against it, not whatever is current now.
   const loadedItemRef = useRef<string | null>(null)
-  // Latest room state for the player's event callbacks, which are bound once.
+  const reportTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  // Latest room state for the audio event handlers.
   const stateRef = useRef(state)
   useEffect(() => {
     stateRef.current = state
   }, [state])
 
-  const nowPlayingId = state?.now_playing?.id ?? null
-  const videoId = state?.now_playing?.track.video_id ?? null
+  const nowPlaying = state?.now_playing ?? null
+  const nowPlayingId = nowPlaying?.id ?? null
+  const videoId = nowPlaying?.track.video_id ?? null
   const isPlaying = state?.is_playing ?? false
 
-  useEffect(() => {
-    if (!started || !mountRef.current) return
-    let cancelled = false
-    let reportTimer: ReturnType<typeof setTimeout> | undefined
-    const report = (e: unknown) => onError(e instanceof Error ? e.message : String(e))
+  const report = (e: unknown) => onError(e instanceof Error ? e.message : String(e))
 
-    // Play/pause made on the player itself is reported only if it is still true a moment
-    // later, so seeks, buffering, end-of-song pauses and our own commands don't echo back.
-    const reportLater = (check: (player: YT.Player, roomPlaying: boolean) => boolean, playing: boolean) => {
-      clearTimeout(reportTimer)
-      reportTimer = setTimeout(() => {
-        const player = playerRef.current
-        if (player && check(player, stateRef.current?.is_playing ?? false)) setPlaying(playing).catch(report)
-      }, REPORT_DELAY_MS)
-    }
+  const load = (audio: HTMLAudioElement, itemId: string, id: string) => {
+    loadedItemRef.current = itemId
+    audio.src = audioUrl(id)
+    if (stateRef.current?.is_playing) audio.play().catch(() => {}) // superseded loads reject; errors arrive via onError
+  }
 
-    const handle = (event: PlayerEvent) => {
-      const action = onPlayerEvent(event, stateRef.current?.now_playing?.id ?? null)
-      if (action) next(action.expected).catch(report)
-    }
-
-    // YT.Player replaces its target with an iframe, so give it a node React doesn't own.
-    const container = mountRef.current
-    const target = document.createElement('div')
-    container.appendChild(target)
-
-    loadYouTubeApi().then(() => {
-      if (cancelled) return
-      playerRef.current = new YT.Player(target, {
-        playerVars: { autoplay: 1, playsinline: 1, rel: 0 },
-        events: {
-          onReady: () => setReady(true),
-          onError: (e) => handle({ kind: 'error', code: Number(e.data) }),
-          onStateChange: (e) => {
-            if (e.data === ENDED) {
-              clearTimeout(reportTimer)
-              handle({ kind: 'ended' })
-            } else if (e.data === PLAYING) {
-              reportLater((player, roomPlaying) => shouldReportPlay({ playerState: player.getPlayerState(), roomPlaying }), true)
-            } else if (e.data === PAUSED) {
-              reportLater(
-                (player, roomPlaying) =>
-                  shouldReportPause({
-                    playerState: player.getPlayerState(),
-                    roomPlaying,
-                    currentTime: player.getCurrentTime(),
-                    duration: player.getDuration(),
-                  }),
-                false,
-              )
-            }
-          },
-        },
-      })
-    }, report)
-
-    return () => {
-      cancelled = true
-      clearTimeout(reportTimer)
-      playerRef.current?.destroy()
-      playerRef.current = null
-      container.replaceChildren()
-      loadedItemRef.current = null
-      setReady(false)
-    }
-  }, [started, onError])
+  // "Start jam" must call play() inside the click, or browsers block audio with sound.
+  const start = () => {
+    setStarted(true)
+    const audio = audioRef.current
+    if (audio && nowPlayingId && videoId) load(audio, nowPlayingId, videoId)
+  }
 
   // Load a new song whenever the now-playing item changes (item id, so the same song queued twice replays).
   useEffect(() => {
-    const player = playerRef.current
-    if (!ready || !player) return
+    const audio = audioRef.current
+    if (!started || !audio) return
     if (nowPlayingId === null || videoId === null) {
       loadedItemRef.current = null
-      player.stopVideo()
+      audio.pause()
+      audio.removeAttribute('src')
+      audio.load()
       return
     }
-    if (loadedItemRef.current === nowPlayingId) return
-    loadedItemRef.current = nowPlayingId
-    if (stateRef.current?.is_playing) player.loadVideoById(videoId)
-    else player.cueVideoById(videoId)
-  }, [ready, nowPlayingId, videoId])
+    if (loadedItemRef.current !== nowPlayingId) load(audio, nowPlayingId, videoId)
+  }, [started, nowPlayingId, videoId])
 
-  // Follow play/pause from the room (e.g. someone tapped pause on their phone). Always issue the
-  // command: the player's own state can lag behind a quick pause→play, and both calls are idempotent.
+  // Follow play/pause from the room (e.g. someone tapped pause on their phone).
   useEffect(() => {
-    const player = playerRef.current
-    if (!ready || !player || nowPlayingId === null) return
-    if (isPlaying) player.playVideo()
-    else player.pauseVideo()
-  }, [ready, isPlaying, nowPlayingId])
+    const audio = audioRef.current
+    if (!started || !audio || nowPlayingId === null) return
+    if (isPlaying) audio.play().catch(() => {})
+    else audio.pause()
+  }, [started, isPlaying, nowPlayingId])
+
+  useEffect(() => () => clearTimeout(reportTimer.current), [])
+
+  const handle = (event: PlayerEvent) => {
+    clearTimeout(reportTimer.current)
+    const action = onPlayerEvent(event, loadedItemRef.current)
+    if (action) next(action.expected).catch(report)
+  }
+
+  // Play/pause made on this device is reported only if it is still true a moment later,
+  // so seeks, the pause <audio> fires before `ended`, and our own commands don't echo back.
+  const reportLater = (check: (audio: HTMLAudioElement, roomPlaying: boolean) => boolean, playing: boolean) => {
+    clearTimeout(reportTimer.current)
+    reportTimer.current = setTimeout(() => {
+      const audio = audioRef.current
+      if (audio && loadedItemRef.current && check(audio, stateRef.current?.is_playing ?? false)) {
+        setPlaying(playing).catch(report)
+      }
+    }, REPORT_DELAY_MS)
+  }
+
+  const art = nowPlaying?.track.thumbnail_url
 
   return (
     <section className="host-player">
-      <div className="frame">
+      <div className="now-card">
+        {art ? <img className="art" src={art} alt="" referrerPolicy="no-referrer" /> : <div className="art art-empty" aria-hidden>♪</div>}
+        <div className="now-card-text">
+          <span className="track-title">{nowPlaying?.track.title ?? 'Nothing playing'}</span>
+          <span className="track-meta">{nowPlaying?.track.artist}</span>
+          {loading && nowPlaying ? <span className="muted small">Loading…</span> : null}
+        </div>
         {!started ? (
-          <div className="host-start">
-            <button className="primary" onClick={() => setStarted(true)}>
-              Start jam
-            </button>
-          </div>
+          <button className="primary" onClick={start}>
+            Start jam
+          </button>
         ) : null}
-        <div ref={mountRef} />
       </div>
-      <p className="muted small">
-        This device is the speaker. For no ads, sign into YouTube Premium in this browser (Chrome recommended).
-      </p>
+      <audio
+        ref={audioRef}
+        className="host-audio"
+        controls
+        preload="auto"
+        onLoadStart={() => setLoading(true)}
+        onWaiting={() => setLoading(true)}
+        onCanPlay={() => setLoading(false)}
+        onPlaying={() => {
+          setLoading(false)
+          reportLater((audio, roomPlaying) => shouldReportPlay({ paused: audio.paused, roomPlaying }), true)
+        }}
+        onPause={() =>
+          reportLater(
+            (audio, roomPlaying) =>
+              shouldReportPause({ paused: audio.paused, roomPlaying, currentTime: audio.currentTime, duration: audio.duration }),
+            false,
+          )
+        }
+        onEnded={() => handle({ kind: 'ended' })}
+        onError={() => {
+          if (!loadedItemRef.current) return // src was cleared on purpose
+          setLoading(false)
+          onError(`Couldn't play ${stateRef.current?.now_playing?.track.title ?? 'that song'} — skipping`)
+          handle({ kind: 'error' })
+        }}
+      />
+      <p className="muted small">This device is the speaker — keep this tab open.</p>
     </section>
   )
 }
