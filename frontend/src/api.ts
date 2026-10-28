@@ -78,6 +78,11 @@ export const removeItem = (id: string) =>
 export const moveItem = (id: string, toIndex: number) =>
   request<RoomState>(`/api/queue/${encodeURIComponent(id)}/move`, { method: 'POST', body: { to_index: toIndex } })
 
+export const playItem = (id: string) =>
+  request<RoomState>(`/api/queue/${encodeURIComponent(id)}/play`, { method: 'POST' })
+
+export const clearQueue = () => request<RoomState>('/api/queue/clear', { method: 'POST' })
+
 export const next = (expectedItemId: string | null) =>
   request<RoomState>('/api/player/next', { method: 'POST', body: { expected_item_id: expectedItemId } })
 

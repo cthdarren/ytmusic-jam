@@ -6,7 +6,12 @@ uses their phone to search, paste links and shuffle the shared queue around.
 - **Search** YouTube Music for songs or videos and tap **+** to queue them.
 - **Paste a link** (`music.youtube.com`, `youtube.com`, `youtu.be`, shorts) into the
   same box to add it straight to the queue.
-- **Queue** button: see what's up next, drag to reorder, ✕ to remove.
+- **Queue** button: the whole night in one list, with played songs dimmed above the
+  one playing now. Tap any song to jump to it; playback carries on down the list from
+  there. Drag upcoming songs to reorder, ✕ to remove.
+- **Clear queue** (host only): wipes the night's list after a confirmation. The list
+  is saved in `./data`, so it survives restarts (it comes back paused) and only this
+  button clears it.
 - **Invite** (host only): shows a QR code and link. Friends who open it join without
   a password. **Reset link** makes a new one and kicks everyone who used the old one.
 
@@ -21,8 +26,8 @@ docker compose up -d --build
 Open `http://<server-ip>:8000` (e.g. `http://192.168.66.66:8000`, or the server's
 Tailscale address) and sign in with the username and password from `.env`.
 
-`./data` holds the current invite token so invite links survive restarts. The queue
-itself lives in memory and is cleared when the container restarts.
+`./data` holds the invite token and tonight's song list, so both survive restarts.
+After a restart the music comes back paused; press play to carry on.
 
 To update after pulling changes: `docker compose up -d --build`.
 

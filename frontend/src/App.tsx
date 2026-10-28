@@ -145,10 +145,15 @@ function Jam({ role, onLoggedOut }: { role: Role; onLoggedOut: () => void }) {
 
       <QueueDrawer
         open={queueOpen}
+        played={state?.played ?? []}
+        nowPlaying={state?.now_playing ?? null}
         items={state?.queue ?? []}
+        isOwner={role === 'owner'}
         onClose={() => setQueueOpen(false)}
         onRemove={(id) => run(() => api.removeItem(id))}
         onMove={(id, toIndex) => run(() => api.moveItem(id, toIndex))}
+        onPlay={(id) => run(() => api.playItem(id))}
+        onClear={() => run(api.clearQueue)}
       />
 
       {inviteOpen ? <InviteDialog onClose={() => setInviteOpen(false)} onError={showError} /> : null}

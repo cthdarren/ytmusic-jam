@@ -15,6 +15,7 @@ export interface QueueItem {
 }
 
 export interface RoomState {
+  played: QueueItem[] // oldest first; played + now_playing + queue is the whole night in order
   now_playing: QueueItem | null
   queue: QueueItem[]
   is_playing: boolean
