@@ -20,6 +20,8 @@ class Settings:
     preload_songs: int = 20
     # How many songs download at the same time while preloading.
     preload_workers: int = 4
+    # Telegram bot token from @BotFather; no token, no bot.
+    telegram_token: str | None = None
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -37,4 +39,5 @@ class Settings:
             audio_cache_mb=int(os.environ.get("JAM_AUDIO_CACHE_MB") or 500),
             preload_songs=int(os.environ.get("JAM_PRELOAD_SONGS") or 20),
             preload_workers=int(os.environ.get("JAM_PRELOAD_WORKERS") or 4),
+            telegram_token=os.environ.get("JAM_TELEGRAM_TOKEN") or None,
         )

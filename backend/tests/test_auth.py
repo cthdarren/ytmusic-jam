@@ -184,11 +184,15 @@ def test_settings_cookie_and_cache_env(monkeypatch, tmp_path):
     monkeypatch.delenv("JAM_AUDIO_CACHE_MB", raising=False)
     monkeypatch.delenv("JAM_PRELOAD_SONGS", raising=False)
     monkeypatch.delenv("JAM_PRELOAD_WORKERS", raising=False)
+    monkeypatch.setenv("JAM_TELEGRAM_TOKEN", "")
     s = Settings.from_env()
+    assert s.telegram_token is None
     assert (s.cookies_file, s.audio_cache_mb, s.preload_songs, s.preload_workers) == (tmp_path / "cookies.txt", 500, 20, 4)
     monkeypatch.setenv("JAM_COOKIES_FILE", "/secrets/yt.txt")
     monkeypatch.setenv("JAM_AUDIO_CACHE_MB", "200")
     monkeypatch.setenv("JAM_PRELOAD_SONGS", "5")
     monkeypatch.setenv("JAM_PRELOAD_WORKERS", "6")
+    monkeypatch.setenv("JAM_TELEGRAM_TOKEN", "123:abc")
     s = Settings.from_env()
+    assert s.telegram_token == "123:abc"
     assert (s.cookies_file, s.audio_cache_mb, s.preload_songs, s.preload_workers) == (Path("/secrets/yt.txt"), 200, 5, 6)

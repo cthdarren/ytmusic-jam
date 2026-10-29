@@ -8,6 +8,7 @@ The bot long-polls Telegram, so the home server needs no public address. The tok
 of every request URL, so errors are reported by method and status only.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -31,6 +32,10 @@ JOIN_TOKEN_RE = re.compile(r"/join/([A-Za-z0-9_-]+)")
 START_TOKEN_RE = re.compile(r"^/start(?:@\w+)?\s+([A-Za-z0-9_-]+)")
 ADD_COMMAND_RE = re.compile(r"^/add(?:@\w+)?\b\s*")
 LINK_RE = re.compile(r"\S*(?:youtube\.com/|youtu\.be/|open\.spotify\.com/|spotify:track:)\S*")
+
+POLL_SECONDS = 50
+FIRST_RETRY_SECONDS = 5
+MAX_RETRY_SECONDS = 60
 
 ASK_FOR_INVITE = "Send me the jam's invite link first (ask the host for it)."
 INVITE_EXPIRED = "That invite link has expired — ask the host for a new one."
@@ -129,7 +134,47 @@ class TelegramBot:
         self.pairings = pairings
         self.current_token = current_token
         self.add_link = add_link
-        self.username: str | None = None
+        self.username: str | None = None  # from getMe; used for the t.me deep link
+        self._tasks: set[asyncio.Task] = set()
+
+    async def run(self, sleep: Callable[[float], Awaitable[None]] = asyncio.sleep) -> None:
+        """Long-poll Telegram until cancelled. A rejected token (401) stops the bot only."""
+        try:
+            self.username = (await anyio.to_thread.run_sync(self.api.get_me)).get("username")
+        except TelegramError as e:
+            if e.status == 401:
+                log.error("Telegram rejected the bot token (JAM_TELEGRAM_TOKEN); the bot is off")
+                return
+            log.warning("Couldn't look up the Telegram bot: %s", e)
+        offset: int | None = None
+        retry = FIRST_RETRY_SECONDS
+        while True:
+            try:
+                updates = await anyio.to_thread.run_sync(self.api.get_updates, offset, POLL_SECONDS)
+            except TelegramError as e:
+                if e.status == 401:
+                    log.error("Telegram rejected the bot token (JAM_TELEGRAM_TOKEN); the bot is off")
+                    return
+                if e.status == 409:  # another copy of the bot is polling with this token
+                    wait = MAX_RETRY_SECONDS
+                else:
+                    wait, retry = retry, min(retry * 2, MAX_RETRY_SECONDS)
+                log.warning("%s; retrying in %d s", e, wait)
+                await sleep(wait)
+                continue
+            retry = FIRST_RETRY_SECONDS
+            for update in updates:
+                offset = max(offset or 0, int(update["update_id"]) + 1)
+                # Each message in its own task: a slow Spotify match mustn't hold up the rest.
+                task = asyncio.create_task(self._handle_safely(update))
+                self._tasks.add(task)
+                task.add_done_callback(self._tasks.discard)
+
+    async def _handle_safely(self, update: dict) -> None:
+        try:
+            await self.handle(update)
+        except Exception:
+            log.exception("Telegram message handling failed")
 
     async def handle(self, update: dict) -> None:
         message = update.get("message") or {}

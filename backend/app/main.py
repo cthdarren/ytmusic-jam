@@ -18,6 +18,7 @@ from app.models import RoomState, Track
 from app.room import Room
 from app.settings import Settings
 from app.spotify import SpotifyNotATrack, best_match, fetch_spotify_track, parse_spotify
+from app.telegram import Pairings, TelegramAPI, TelegramBot
 from app.ytm import UpstreamError, YTMClient
 
 log = logging.getLogger(__name__)
@@ -59,6 +60,7 @@ def create_app(
     static_dir: Path | None | object = _DEFAULT,
     settings: Settings | None = None,
     audio: AudioCache | None = None,
+    telegram_api: TelegramAPI | None = None,
 ) -> FastAPI:
     """Build the app. Run in production with `uvicorn --factory app.main:create_app`."""
     if static_dir is _DEFAULT:
@@ -75,6 +77,18 @@ def create_app(
             downloader=ytdlp_download,
         )
     preloader = Preloader(audio, concurrency=settings.preload_workers)
+    if telegram_api is None and settings.telegram_token:
+        telegram_api = TelegramAPI(settings.telegram_token)
+    bot = (
+        TelegramBot(
+            telegram_api,
+            Pairings(settings.data_dir / "telegram_users.json"),
+            lambda: auth.join_token,  # Reset link signs Telegram users out too
+            lambda text, added_by: add_link(text, added_by),
+        )
+        if telegram_api is not None
+        else None
+    )
     hub = Hub()
 
     # Tell everyone which songs are downloaded (start instantly) whenever that changes.
@@ -104,7 +118,11 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         preload(room.snapshot())  # a restored night is preloaded, and stale downloads pruned, right away
+        bot_task = asyncio.create_task(bot.run()) if bot is not None else None
         yield
+        if bot_task is not None:
+            bot_task.cancel()
+            await asyncio.gather(bot_task, return_exceptions=True)
         await preloader.close()
 
     app = FastAPI(title="YT Music Jam", lifespan=lifespan)
@@ -126,7 +144,10 @@ def create_app(
         )
 
     def join_url(request: Request) -> dict[str, str]:
-        return {"url": f"{request.base_url}join/{auth.join_token}"}
+        urls = {"url": f"{request.base_url}join/{auth.join_token}"}
+        if bot is not None and bot.username:
+            urls["telegram_url"] = f"https://t.me/{bot.username}?start={auth.join_token}"
+        return urls
 
     api = APIRouter(dependencies=[Depends(session_role)])
 

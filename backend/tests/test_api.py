@@ -508,3 +508,83 @@ def test_add_spotify_unreadable_502(client, monkeypatch):
 def test_add_spotify_missing_track_404(client, monkeypatch):
     fake_spotify(monkeypatch, error=LookupError("gone"))
     assert add(client, SPOTIFY_TRACK_URL).status_code == 404
+
+
+class FakeTelegram:
+    """Stands in for the Telegram Bot API: the test pushes messages, the bot's replies are kept."""
+
+    def __init__(self):
+        import queue
+
+        self.inbox = queue.Queue()
+        self.sent = []
+        self.next_id = 1
+
+    def get_me(self):
+        return {"username": "jam_bot"}
+
+    def get_updates(self, offset, timeout):
+        import queue
+
+        try:
+            return [self.inbox.get(timeout=0.05)]
+        except queue.Empty:
+            return []
+
+    def send_message(self, chat_id, text, reply_to=None):
+        self.sent.append(text)
+
+    def push(self, text):
+        self.inbox.put({"update_id": self.next_id, "message": {
+            "message_id": self.next_id, "text": text, "chat": {"id": 7, "type": "private"},
+            "from": {"id": 7, "first_name": "Tele"}}})
+        self.next_id += 1
+
+
+def telegram_client(settings, fake_ytm, telegram):
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+
+    return TestClient(create_app(ytm=fake_ytm, static_dir=None, settings=settings, telegram_api=telegram))
+
+
+def test_join_includes_telegram_url_when_bot_running(settings, fake_ytm):
+    from tests.conftest import join_url_token, login
+
+    telegram = FakeTelegram()
+    with telegram_client(settings, fake_ytm, telegram) as c:
+        login(c)
+        token = join_url_token(c)
+        assert wait_for(lambda: c.get("/api/join").json().get("telegram_url") == f"https://t.me/jam_bot?start={token}")
+
+
+def test_join_has_no_telegram_url_without_bot(client):
+    assert "telegram_url" not in client.get("/api/join").json()
+
+
+def test_telegram_link_is_queued_and_broadcast(settings, fake_ytm):
+    from tests.conftest import join_url_token, login
+
+    telegram = FakeTelegram()
+    with telegram_client(settings, fake_ytm, telegram) as c:
+        login(c)
+        token = join_url_token(c)
+        telegram.push(f"/start {token}")
+        telegram.push(f"https://youtu.be/{ID}")
+        assert wait_for(lambda: (c.get("/api/state").json()["now_playing"] or {}).get("added_by") == "Tele")
+        assert wait_for(lambda: telegram.sent[-1:] == [f"Added “T-{ID}” – Artist"])
+
+
+def test_reset_link_signs_out_telegram_users(settings, fake_ytm):
+    from tests.conftest import join_url_token, login
+
+    telegram = FakeTelegram()
+    with telegram_client(settings, fake_ytm, telegram) as c:
+        login(c)
+        telegram.push(f"/start {join_url_token(c)}")
+        assert wait_for(lambda: len(telegram.sent) == 1)
+        c.post("/api/join/reset")
+        telegram.push(f"https://youtu.be/{ID}")
+        assert wait_for(lambda: telegram.sent[-1:] == ["Send me the jam's invite link first (ask the host for it)."])
+        assert c.get("/api/state").json()["now_playing"] is None

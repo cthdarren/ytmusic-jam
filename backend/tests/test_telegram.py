@@ -1,6 +1,7 @@
 import logging
 import urllib.error
 
+import anyio
 import pytest
 from fastapi import HTTPException
 
@@ -184,3 +185,107 @@ def test_api_errors_never_log_the_token(monkeypatch, caplog):
     assert exc.value.status is None
     assert secret not in str(exc.value)
     assert exc.value.__cause__ is None  # the original error (with the URL) isn't chained
+
+
+def test_get_updates_sends_long_poll_params(monkeypatch):
+    import json as _json
+
+    seen = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b'{"ok": true, "result": []}'
+
+    def urlopen(request, timeout=None):
+        seen["body"] = _json.loads(request.data)
+        seen["timeout"] = timeout
+        seen["method"] = request.full_url.rsplit("/", 1)[1]
+        return Response()
+
+    monkeypatch.setattr("app.telegram.urllib.request.urlopen", urlopen)
+    assert TelegramAPI("t").get_updates(offset=42, timeout=50) == []
+    assert seen == {"method": "getUpdates", "timeout": 60,
+                    "body": {"timeout": 50, "allowed_updates": ["message"], "offset": 42}}
+
+
+class PollingAPI(FakeAPI):
+    """Serves batches of updates, then errors, recording each getUpdates offset."""
+
+    def __init__(self, batches):
+        super().__init__()
+        self.batches = list(batches)
+        self.offsets = []
+
+    def get_me(self):
+        return {"username": "jam_bot"}
+
+    def get_updates(self, offset, timeout):
+        self.offsets.append(offset)
+        if not self.batches:
+            raise TelegramError("Telegram getUpdates failed (401)", 401)
+        batch = self.batches.pop(0)
+        if isinstance(batch, Exception):
+            raise batch
+        return batch
+
+
+def update(update_id, text, user=7):
+    u = message(text, user=user)
+    u["update_id"] = update_id
+    return u
+
+
+async def test_offset_advances(tmp_path):
+    api, jam = PollingAPI([[update(5, "hi"), update(6, "hey")], [update(9, "yo")]]), Jam()
+    bot = TelegramBot(api, Pairings(tmp_path / "t.json"), lambda: jam.token, jam.add_link)
+    await bot.run(sleep=lambda s: anyio.sleep(0))
+    assert api.offsets == [None, 7, 10]
+    assert bot.username == "jam_bot"
+
+
+async def test_bad_token_stops_polling(tmp_path):
+    api, jam = PollingAPI([]), Jam()
+    bot = TelegramBot(api, Pairings(tmp_path / "t.json"), lambda: jam.token, jam.add_link)
+    await bot.run(sleep=lambda s: anyio.sleep(0))  # returns instead of polling forever
+    assert api.offsets == [None]
+
+
+async def test_network_error_backs_off(tmp_path):
+    errors = [TelegramError("Telegram getUpdates failed (network error)")] * 6
+    api, jam = PollingAPI(errors + [TelegramError("conflict", 409)]), Jam()
+    bot = TelegramBot(api, Pairings(tmp_path / "t.json"), lambda: jam.token, jam.add_link)
+    waits = []
+
+    async def sleep(seconds):
+        waits.append(seconds)
+
+    await bot.run(sleep=sleep)
+    assert waits == [5, 10, 20, 40, 60, 60, 60]  # doubling, capped at 60; 409 waits 60
+
+
+async def test_slow_add_does_not_block_next_update(tmp_path):
+    import time
+
+    jam = Jam()
+    started = []
+
+    async def slow_add(text, added_by):
+        started.append(time.monotonic())
+        await anyio.sleep(0.3)
+        return state_with("Song", "Artist")
+
+    pairings = Pairings(tmp_path / "t.json")
+    pairings.pair(1, TOKEN)
+    pairings.pair(2, TOKEN)
+    api = PollingAPI([[update(1, LINK, user=1), update(2, LINK, user=2)]])
+    bot = TelegramBot(api, pairings, lambda: jam.token, slow_add)
+    await bot.run(sleep=lambda s: anyio.sleep(0))
+    await anyio.sleep(0.5)
+    assert len(started) == 2 and started[1] - started[0] < 0.2
+    assert len(api.sent) == 2
