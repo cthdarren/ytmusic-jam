@@ -5,6 +5,7 @@ __NEXT_DATA__ JSON, so no API keys are needed. Matching then searches YouTube Mu
 and ranks results by title, artist and how close the duration is.
 """
 
+import http.client
 import json
 import re
 import urllib.error
@@ -19,8 +20,12 @@ from app.ytm import UpstreamError
 SPOTIFY_ID_RE = re.compile(r"[A-Za-z0-9]{22}")
 NEXT_DATA_RE = re.compile(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', re.S)
 USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
-MIN_SCORE = 0.6
+# Score = title + artist similarity (each 0–1) minus a duration penalty (0–1). 1.2 means a song
+# has to look right on both title and artist; a near title alone isn't enough.
+MIN_SCORE = 1.2
 MIN_TITLE_SIMILARITY = 0.4
+# Containment ("Sunflower" inside "Sunflower (Spider-Man…)") only counts for words this long.
+MIN_CONTAINED_LENGTH = 4
 
 
 class SpotifyNotATrack(ValueError):
@@ -56,15 +61,19 @@ def parse_spotify(text: str) -> str | None:
 
 
 def parse_embed_page(html: str) -> SpotifyTrack:
+    """Song details from the embed page; anything unexpected becomes UpstreamError (a 502)."""
     match = NEXT_DATA_RE.search(html)
     try:
         entity = json.loads(match.group(1))["props"]["pageProps"]["state"]["data"]["entity"]
         name = entity["name"]
+        artists = [a["name"] for a in entity.get("artists") or []]
+        duration = entity.get("duration")
+        duration_ms = int(duration) if duration else None
     except (AttributeError, KeyError, TypeError, ValueError) as e:
         raise UpstreamError("Spotify page didn't contain the song details") from e
-    artists = [a["name"] for a in entity.get("artists") or [] if a.get("name")]
-    duration = entity.get("duration")
-    return SpotifyTrack(name, artists, int(duration) if duration else None)
+    if not isinstance(name, str) or not name.strip() or not all(isinstance(a, str) and a for a in artists):
+        raise UpstreamError("Spotify page had unexpected song details")
+    return SpotifyTrack(name, artists, duration_ms)
 
 
 def fetch_spotify_track(track_id: str) -> SpotifyTrack:
@@ -78,7 +87,7 @@ def fetch_spotify_track(track_id: str) -> SpotifyTrack:
         if e.code == 404:
             raise LookupError(track_id) from e
         raise UpstreamError(f"Spotify returned {e.code}") from e
-    except OSError as e:
+    except (OSError, http.client.HTTPException) as e:
         raise UpstreamError(str(e)) from e
     return parse_embed_page(html)
 
@@ -95,11 +104,15 @@ def _core_title(title: str) -> str:
 
 
 def _similarity(a: str, b: str) -> float:
+    """0–1. One side's words all appearing in the other counts as a near match, but only for
+    real words: a one-letter title like "i" must not "contain" every other title."""
     if not a or not b:
         return 0.0
-    if a in b or b in a:
-        return max(0.9, SequenceMatcher(None, a, b).ratio())
-    return SequenceMatcher(None, a, b).ratio()
+    ratio = SequenceMatcher(None, a, b).ratio()
+    shorter, longer = sorted((a, b), key=len)
+    if len(shorter) >= MIN_CONTAINED_LENGTH and set(shorter.split()) <= set(longer.split()):
+        return max(0.9, ratio)
+    return ratio
 
 
 def _title_similarity(wanted: str, candidate: str) -> float:
@@ -121,13 +134,15 @@ def _duration_penalty(wanted_ms: int | None, candidate_s: int | None) -> float:
 
 
 def best_match(track: SpotifyTrack, candidates: list[Track]) -> Track | None:
-    best, best_score = None, MIN_SCORE
+    best, best_key = None, (MIN_SCORE, -1.0)
     for candidate in candidates:
         title = _title_similarity(track.name, candidate.title)
         if title < MIN_TITLE_SIMILARITY:
             continue
         score = (title + _artist_similarity(track.artists, candidate.artist)
                  - _duration_penalty(track.duration_ms, candidate.duration_seconds))
-        if score > best_score:
-            best, best_score = candidate, score
+        # On a tie, the closer exact title wins, so "Song" beats "Song (Remix)" for Spotify "Song".
+        key = (round(score, 6), _similarity(_normalise(track.name), _normalise(candidate.title)))
+        if key[0] >= MIN_SCORE and key > best_key:
+            best, best_key = candidate, key
     return best
