@@ -224,16 +224,16 @@ def create_app(
             raise HTTPException(404, "Couldn't find that song on YouTube Music")
         return match
 
-    @api.post("/api/queue")
-    async def add_to_queue(body: AddRequest) -> RoomState:
+    async def add_link(text: str, added_by: str | None) -> RoomState:
+        """Queue the song behind a YouTube or Spotify link (web search box and Telegram bot)."""
         try:
-            spotify_id = parse_spotify(body.input)
+            spotify_id = parse_spotify(text)
         except SpotifyNotATrack:
             raise HTTPException(400, "Only Spotify song links are supported (not albums or playlists)")
         if spotify_id is not None:
             track = await run_in_threadpool(spotify_to_youtube, spotify_id)
         else:
-            video_id = parse_video_id(body.input)
+            video_id = parse_video_id(text)
             if video_id is None:
                 raise HTTPException(400, "Not a YouTube or Spotify link")
             try:
@@ -242,9 +242,12 @@ def create_app(
                 raise HTTPException(404, "That video doesn't exist or isn't available")
             except UpstreamError as e:
                 raise HTTPException(502, f"YouTube Music lookup failed: {e}")
-        added_by = (body.added_by or "").strip()[:40] or None
-        room.add(track, added_by)
+        room.add(track, (added_by or "").strip()[:40] or None)
         return await changed()
+
+    @api.post("/api/queue")
+    async def add_to_queue(body: AddRequest) -> RoomState:
+        return await add_link(body.input, body.added_by)
 
     # Declared before the /api/queue/{item_id}/... routes so "clear" is never read as an item id.
     @api.post("/api/queue/clear", dependencies=[Depends(require_owner)])
