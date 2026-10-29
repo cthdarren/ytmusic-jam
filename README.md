@@ -5,7 +5,11 @@ uses their phone to search, paste links and shuffle the shared queue around.
 
 - **Search** YouTube Music for songs or videos and tap **+** to queue them.
 - **Paste a link** (`music.youtube.com`, `youtube.com`, `youtu.be`, shorts) into the
-  same box to add it straight to the queue.
+  same box to add it straight to the queue. **Spotify song links** work too: the app
+  finds the same song on YouTube Music (matching title, artist and length) and the
+  confirmation names the song it picked. Albums and playlists aren't supported.
+- The browser tab title shows the song playing as `title - artist`, so desktop
+  widgets (e.g. waybar) can display it.
 - **Queue** button: the whole night in one list, with played songs dimmed above the
   one playing now. Tap any song to jump to it; playback carries on down the list from
   there. Drag any song (played, playing or upcoming) to reorder the night: the song

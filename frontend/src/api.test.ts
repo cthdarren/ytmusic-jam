@@ -33,3 +33,13 @@ describe('next', () => {
     }
   })
 })
+
+describe('isLink with Spotify', () => {
+  it.each([
+    'https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT?si=abc',
+    'open.spotify.com/intl-de/track/4cOdK2wGLETKBW3PvgPWqT',
+    'spotify:track:4cOdK2wGLETKBW3PvgPWqT',
+  ])('treats %s as a link', (text) => {
+    expect(isLink(text)).toBe(true)
+  })
+})

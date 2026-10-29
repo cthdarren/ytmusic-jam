@@ -36,7 +36,7 @@ export function SearchBar({ busy, onSearch, onAddLink }: Props) {
         <input
           type="search"
           enterKeyHint={linkMode ? 'done' : 'search'}
-          placeholder="Search songs or paste a YouTube link"
+          placeholder="Search songs or paste a YouTube or Spotify link"
           value={text}
           onChange={(e) => setText(e.target.value)}
           aria-label="Search or paste link"

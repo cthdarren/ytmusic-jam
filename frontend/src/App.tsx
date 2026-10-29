@@ -8,6 +8,7 @@ import { QueueDrawer } from './components/QueueDrawer'
 import { SearchBar } from './components/SearchBar'
 import { SearchResults } from './components/SearchResults'
 import { TopBar } from './components/TopBar'
+import { describeAdded } from './describeAdded'
 import { APP_NAME, pageTitle } from './pageTitle'
 import type { Role, SearchKind, Track } from './types'
 import { useRoom } from './useRoom'
@@ -112,9 +113,9 @@ function Jam({ role, onLoggedOut }: { role: Role; onLoggedOut: () => void }) {
   }
 
   const addLink = async (link: string) => {
-    const ok = (await run(() => api.addToQueue(link, nickname))) !== undefined
-    if (ok) setToast('Added to the queue')
-    return ok
+    const added = await run(() => api.addToQueue(link, nickname))
+    if (added) setToast(describeAdded(added))
+    return added !== undefined
   }
 
   const current = state?.now_playing ?? null
