@@ -33,11 +33,13 @@ START_TOKEN_RE = re.compile(r"^/start(?:@\w+)?\s+([A-Za-z0-9_-]+)")
 ADD_COMMAND_RE = re.compile(r"^/add(?:@\w+)?\b\s*")
 LINK_RE = re.compile(r"\S*(?:youtube\.com/|youtu\.be/|open\.spotify\.com/|spotify:track:)\S*")
 
-POLL_SECONDS = 50
+# Short enough that a blocked poll can't outlast `docker compose stop`'s 10 s grace period.
+POLL_SECONDS = 8
 FIRST_RETRY_SECONDS = 5
 MAX_RETRY_SECONDS = 60
 
 ASK_FOR_INVITE = "Send me the jam's invite link first (ask the host for it)."
+ASK_FOR_INVITE_PRIVATELY = "Message me privately with the jam's invite link first."
 INVITE_EXPIRED = "That invite link has expired — ask the host for a new one."
 PAIRED = "You're in! Send me a YouTube or Spotify link to add it to the queue."
 SEND_A_LINK = "Send me a YouTube or Spotify song link."
@@ -69,7 +71,8 @@ class TelegramAPI:
                 body = json.loads(response.read())
         except urllib.error.HTTPError as e:
             status = e.code
-        except (OSError, ValueError):
+            e.close()
+        except Exception:  # anything else (http.client errors, bad JSON...) may quote the URL
             status = None
         else:
             if body.get("ok"):
@@ -139,13 +142,8 @@ class TelegramBot:
 
     async def run(self, sleep: Callable[[float], Awaitable[None]] = asyncio.sleep) -> None:
         """Long-poll Telegram until cancelled. A rejected token (401) stops the bot only."""
-        try:
-            self.username = (await anyio.to_thread.run_sync(self.api.get_me)).get("username")
-        except TelegramError as e:
-            if e.status == 401:
-                log.error("Telegram rejected the bot token (JAM_TELEGRAM_TOKEN); the bot is off")
-                return
-            log.warning("Couldn't look up the Telegram bot: %s", e)
+        if not await self._look_up_username():
+            return
         offset: int | None = None
         retry = FIRST_RETRY_SECONDS
         while True:
@@ -162,13 +160,31 @@ class TelegramBot:
                 log.warning("%s; retrying in %d s", e, wait)
                 await sleep(wait)
                 continue
+            except Exception:
+                log.exception("Telegram polling hit an unexpected error; retrying in %d s", retry)
+                wait, retry = retry, min(retry * 2, MAX_RETRY_SECONDS)
+                await sleep(wait)
+                continue
             retry = FIRST_RETRY_SECONDS
+            if self.username is None and not await self._look_up_username():
+                return  # e.g. booted before the router: the invite dialog needs the username
             for update in updates:
                 offset = max(offset or 0, int(update["update_id"]) + 1)
                 # Each message in its own task: a slow Spotify match mustn't hold up the rest.
                 task = asyncio.create_task(self._handle_safely(update))
                 self._tasks.add(task)
                 task.add_done_callback(self._tasks.discard)
+
+    async def _look_up_username(self) -> bool:
+        """Fetch the bot's @username (for the t.me link). False means the token was rejected."""
+        try:
+            self.username = (await anyio.to_thread.run_sync(self.api.get_me)).get("username")
+        except TelegramError as e:
+            if e.status == 401:
+                log.error("Telegram rejected the bot token (JAM_TELEGRAM_TOKEN); the bot is off")
+                return False
+            log.warning("Couldn't look up the Telegram bot yet: %s", e)
+        return True
 
     async def _handle_safely(self, update: dict) -> None:
         try:
@@ -191,7 +207,9 @@ class TelegramBot:
             except TelegramError as e:
                 log.warning("Couldn't reply on Telegram: %s", e)
 
-        invite = JOIN_TOKEN_RE.search(text) or START_TOKEN_RE.match(text)
+        # In groups only /start counts as an invite: other links containing "/join/" (Zoom,
+        # old jam links) are just chatter there.
+        invite = START_TOKEN_RE.match(text) or (None if in_group else JOIN_TOKEN_RE.search(text))
         if invite:
             if invite.group(1) == self.current_token():
                 self.pairings.pair(sender["id"], invite.group(1))
@@ -205,7 +223,8 @@ class TelegramBot:
         if in_group and not (link or is_add_command):
             return  # ordinary group chatter
         if self.pairings.token_for(sender["id"]) != self.current_token():
-            await reply(ASK_FOR_INVITE)
+            # Never invite people to paste the invite into a group where everyone can see it.
+            await reply(ASK_FOR_INVITE_PRIVATELY if in_group else ASK_FOR_INVITE)
             return
         if not link:
             await reply(SEND_A_LINK)

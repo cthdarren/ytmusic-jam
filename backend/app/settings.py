@@ -39,5 +39,5 @@ class Settings:
             audio_cache_mb=int(os.environ.get("JAM_AUDIO_CACHE_MB") or 500),
             preload_songs=int(os.environ.get("JAM_PRELOAD_SONGS") or 20),
             preload_workers=int(os.environ.get("JAM_PRELOAD_WORKERS") or 4),
-            telegram_token=os.environ.get("JAM_TELEGRAM_TOKEN") or None,
+            telegram_token=(os.environ.get("JAM_TELEGRAM_TOKEN") or "").strip() or None,
         )

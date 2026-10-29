@@ -95,9 +95,10 @@ phone: Share → Telegram → the bot, straight from the YouTube or Spotify app)
 2. Put the token it gives you in `.env` as `JAM_TELEGRAM_TOKEN=…`, then
    `docker compose up -d`. The bot only makes outgoing connections, so nothing needs
    to be opened on your router.
-3. Friends join with the invite: the Invite dialog now has **Add on Telegram**, or they
-   can send the bot the invite link. After that, any link they send is queued and the
-   bot replies with the song it added.
+3. Friends join with the invite: open **Invite**, switch it to **Telegram** and let
+   them scan the QR code (it opens the bot in Telegram), or they can send the bot the
+   invite link. After that, any link they send is queued and the bot replies with the
+   song it added.
 
 In group chats use `/add <link>`, or turn off the bot's privacy mode in @BotFather
 (`/setprivacy`) so it sees links posted normally. **Reset link** signs Telegram users

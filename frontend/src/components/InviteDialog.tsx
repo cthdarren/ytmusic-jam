@@ -5,7 +5,10 @@ import { copyText } from '../copyText'
 
 export function InviteDialog({ onClose, onError }: { onClose: () => void; onError: (msg: string) => void }) {
   const [links, setLinks] = useState<JoinLinks | null>(null)
-  const url = links?.url ?? null
+  // What the QR code and Copy button share: the web invite, or the Telegram bot's join link.
+  const [via, setVia] = useState<'web' | 'telegram'>('web')
+  const telegramUrl = links?.telegram_url ?? null
+  const url = (via === 'telegram' && telegramUrl) || links?.url || null
   const [copyStatus, setCopyStatus] = useState<string | null>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
@@ -41,7 +44,30 @@ export function InviteDialog({ onClose, onError }: { onClose: () => void; onErro
           <h2>Invite friends</h2>
           <button className="icon-btn" onClick={onClose} aria-label="Close">✕</button>
         </header>
-        <p className="muted small">Friends on your Wi-Fi scan this to join. No password needed.</p>
+        {telegramUrl ? (
+          <div className="tabs" role="tablist">
+            {(['web', 'telegram'] as const).map((v) => (
+              <button
+                key={v}
+                type="button"
+                role="tab"
+                aria-selected={via === v}
+                className={via === v ? 'tab active' : 'tab'}
+                onClick={() => {
+                  setVia(v)
+                  setCopyStatus(null)
+                }}
+              >
+                {v === 'web' ? 'Web' : 'Telegram'}
+              </button>
+            ))}
+          </div>
+        ) : null}
+        <p className="muted small">
+          {via === 'telegram' && telegramUrl
+            ? 'Friends scan this to add songs from Telegram by sending the bot links.'
+            : 'Friends on your Wi-Fi scan this to join. No password needed.'}
+        </p>
         <canvas ref={canvasRef} className="qr" />
         <input className="join-url" readOnly value={url ?? 'Loading…'} onFocus={(e) => e.target.select()} />
         <div className="row">
@@ -49,9 +75,9 @@ export function InviteDialog({ onClose, onError }: { onClose: () => void; onErro
           <button className="danger" onClick={reset} disabled={!url}>Reset link</button>
         </div>
         {copyStatus ? <p className="small">{copyStatus}</p> : null}
-        {links?.telegram_url ? (
-          <a className="button" href={links.telegram_url} target="_blank" rel="noreferrer">
-            Add on Telegram
+        {via === 'telegram' && telegramUrl ? (
+          <a className="small" href={telegramUrl} target="_blank" rel="noreferrer">
+            Open in Telegram (to add your own account)
           </a>
         ) : null}
       </section>

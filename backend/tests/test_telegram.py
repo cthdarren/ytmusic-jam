@@ -289,3 +289,82 @@ async def test_slow_add_does_not_block_next_update(tmp_path):
     await anyio.sleep(0.5)
     assert len(started) == 2 and started[1] - started[0] < 0.2
     assert len(api.sent) == 2
+
+
+def test_unexpected_network_errors_become_telegram_errors_without_the_token(monkeypatch, caplog):
+    import http.client
+
+    secret = "123456:SECRET-bot-token"
+    errors = [http.client.IncompleteRead(b"half"), http.client.InvalidURL(f"bad url /bot{secret}/getMe"),
+              RuntimeError(f"weird {secret}")]
+
+    def urlopen(request, timeout=None):
+        raise errors.pop(0)
+
+    monkeypatch.setattr("app.telegram.urllib.request.urlopen", urlopen)
+    caplog.set_level(logging.DEBUG)
+    for _ in range(3):
+        with pytest.raises(TelegramError) as exc:
+            TelegramAPI(secret).call("getUpdates")
+        assert secret not in str(exc.value)
+        assert exc.value.__cause__ is None and exc.value.__context__ is None
+    assert secret not in caplog.text
+
+
+async def test_run_survives_unexpected_errors(tmp_path):
+    api, jam = PollingAPI([RuntimeError("boom"), [update(5, "hi")]]), Jam()
+    bot = TelegramBot(api, Pairings(tmp_path / "t.json"), lambda: jam.token, jam.add_link)
+    waits = []
+
+    async def sleep(seconds):
+        waits.append(seconds)
+
+    await bot.run(sleep=sleep)
+    await anyio.sleep(0.05)
+    assert waits == [5]
+    assert api.offsets == [None, None, 6]  # kept polling after the error, then stopped on 401
+    assert replies(api) == ["Send me the jam's invite link first (ask the host for it)."]
+
+
+async def test_username_retried_after_failed_lookup(tmp_path):
+    class FlakyMe(PollingAPI):
+        def __init__(self, batches):
+            super().__init__(batches)
+            self.me_calls = 0
+
+        def get_me(self):
+            self.me_calls += 1
+            if self.me_calls == 1:
+                raise TelegramError("Telegram getMe failed (network error)")
+            return {"username": "jam_bot"}
+
+    api, jam = FlakyMe([[], []]), Jam()
+    bot = TelegramBot(api, Pairings(tmp_path / "t.json"), lambda: jam.token, jam.add_link)
+    await bot.run(sleep=lambda s: anyio.sleep(0))
+    assert bot.username == "jam_bot"
+
+
+def test_poll_fits_inside_docker_stop_grace_period():
+    from app.telegram import POLL_SECONDS
+
+    assert POLL_SECONDS <= 8  # docker compose stop waits 10 s before killing the container
+
+
+async def test_group_ignores_other_join_links(setup):
+    bot, api, _ = setup
+    await bot.handle(message("meeting at https://zoom.us/join/abc123", chat=-100, chat_type="group"))
+    await bot.handle(message(f"http://192.168.66.66:8000/join/{TOKEN}", chat=-100, chat_type="group"))
+    assert api.sent == []
+
+
+async def test_unpaired_group_add_is_sent_to_a_private_chat(setup):
+    bot, api, jam = setup
+    await bot.handle(message(f"/add {LINK}", chat=-100, chat_type="group"))
+    assert replies(api) == ["Message me privately with the jam's invite link first."]
+    assert jam.added == []
+
+
+async def test_group_start_command_still_pairs(setup):
+    bot, api, _ = setup
+    await bot.handle(message(f"/start@jam_bot {TOKEN}", chat=-100, chat_type="group"))
+    assert replies(api) == ["You're in! Send me a YouTube or Spotify link to add it to the queue."]
