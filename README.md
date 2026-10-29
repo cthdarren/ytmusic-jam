@@ -86,6 +86,23 @@ Downloaded songs are short-term: they live in `./data/audio-cache` (500 MB by
 default, set `JAM_AUDIO_CACHE_MB`), the least recently played are deleted first,
 anything unused for a day is deleted, and **Clear queue** empties it.
 
+## Telegram bot (optional)
+
+Friends can queue songs by sending a YouTube or Spotify link to a Telegram bot (on a
+phone: Share → Telegram → the bot, straight from the YouTube or Spotify app).
+
+1. In Telegram, message **@BotFather**, send `/newbot` and follow the steps.
+2. Put the token it gives you in `.env` as `JAM_TELEGRAM_TOKEN=…`, then
+   `docker compose up -d`. The bot only makes outgoing connections, so nothing needs
+   to be opened on your router.
+3. Friends join with the invite: the Invite dialog now has **Add on Telegram**, or they
+   can send the bot the invite link. After that, any link they send is queued and the
+   bot replies with the song it added.
+
+In group chats use `/add <link>`, or turn off the bot's privacy mode in @BotFather
+(`/setprivacy`) so it sees links posted normally. **Reset link** signs Telegram users
+out too; they rejoin with the new invite.
+
 ## Security notes
 
 - Anyone with the invite link can control the queue. Reset it to revoke access.

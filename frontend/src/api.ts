@@ -69,9 +69,15 @@ export const login = (username: string, password: string) =>
 
 export const logout = () => request<void>('/api/auth/logout', { method: 'POST' })
 
-export const getJoinUrl = async () => (await request<{ url: string }>('/api/join')).url
+/** The invite link, plus the Telegram bot's deep link when the bot is running. */
+export interface JoinLinks {
+  url: string
+  telegram_url?: string
+}
 
-export const resetJoinUrl = async () => (await request<{ url: string }>('/api/join/reset', { method: 'POST' })).url
+export const getJoinUrl = () => request<JoinLinks>('/api/join')
+
+export const resetJoinUrl = () => request<JoinLinks>('/api/join/reset', { method: 'POST' })
 
 export const search = (q: string, kind: SearchKind = 'songs') =>
   request<Track[]>(`/api/search?${new URLSearchParams({ q, kind })}`)

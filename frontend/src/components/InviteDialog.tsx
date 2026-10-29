@@ -1,15 +1,16 @@
 import QRCode from 'qrcode'
 import { useEffect, useRef, useState } from 'react'
-import { getJoinUrl, resetJoinUrl } from '../api'
+import { getJoinUrl, type JoinLinks, resetJoinUrl } from '../api'
 import { copyText } from '../copyText'
 
 export function InviteDialog({ onClose, onError }: { onClose: () => void; onError: (msg: string) => void }) {
-  const [url, setUrl] = useState<string | null>(null)
+  const [links, setLinks] = useState<JoinLinks | null>(null)
+  const url = links?.url ?? null
   const [copyStatus, setCopyStatus] = useState<string | null>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
   useEffect(() => {
-    getJoinUrl().then(setUrl, (e: Error) => onError(e.message))
+    getJoinUrl().then(setLinks, (e: Error) => onError(e.message))
   }, [onError])
 
   useEffect(() => {
@@ -26,7 +27,7 @@ export function InviteDialog({ onClose, onError }: { onClose: () => void; onErro
   const reset = async () => {
     if (!confirm('Make a new invite link? Everyone who joined with the old one will be signed out.')) return
     try {
-      setUrl(await resetJoinUrl())
+      setLinks(await resetJoinUrl())
       setCopyStatus(null)
     } catch (e) {
       onError(e instanceof Error ? e.message : 'Reset failed')
@@ -48,6 +49,11 @@ export function InviteDialog({ onClose, onError }: { onClose: () => void; onErro
           <button className="danger" onClick={reset} disabled={!url}>Reset link</button>
         </div>
         {copyStatus ? <p className="small">{copyStatus}</p> : null}
+        {links?.telegram_url ? (
+          <a className="button" href={links.telegram_url} target="_blank" rel="noreferrer">
+            Add on Telegram
+          </a>
+        ) : null}
       </section>
     </div>
   )
