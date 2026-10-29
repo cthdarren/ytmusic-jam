@@ -40,7 +40,7 @@ def test_add_by_link_starts_playing(client):
 def test_add_invalid_link_returns_400(client):
     r = add(client, "https://music.youtube.com/playlist?list=PL123")
     assert r.status_code == 400
-    assert r.json()["detail"] == "Not a YouTube link or video id"
+    assert r.json()["detail"] == "Not a YouTube or Spotify link"
 
 
 def test_add_unknown_video_returns_404(client):
@@ -443,3 +443,68 @@ def test_tapping_a_song_pauses_other_downloads(client, fake_downloader):
     tapped = state["queue"][-1]["id"]  # e
     client.post(f"/api/queue/{tapped}/play")
     assert wait_for(lambda: {"ccccccccccc", "ddddddddddd"} <= set(fake_downloader.paused))
+
+
+SPOTIFY_TRACK_URL = "https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT?si=abc"
+
+
+def fake_spotify(monkeypatch, track=None, error=None):
+    from app.spotify import SpotifyTrack
+
+    calls = []
+
+    def fetch(track_id):
+        calls.append(track_id)
+        if error:
+            raise error
+        return track or SpotifyTrack("Never Gonna Give You Up", ["Rick Astley"], 213_573)
+
+    monkeypatch.setattr("app.main.fetch_spotify_track", fetch)
+    return calls
+
+
+def test_add_spotify_link_queues_best_match(client, monkeypatch, fake_ytm):
+    from app.models import Track
+
+    calls = fake_spotify(monkeypatch)
+    fake_ytm.results = [
+        Track(video_id="cover000000", title="Never Gonna Give You Up", artist="Cover Band", duration_seconds=190),
+        Track(video_id="original000", title="Never Gonna Give You Up", artist="Rick Astley", duration_seconds=214),
+    ]
+    r = add(client, SPOTIFY_TRACK_URL, "Sam")
+    assert r.status_code == 200, r.text
+    playing = r.json()["now_playing"]
+    assert playing["track"]["video_id"] == "original000"
+    assert playing["added_by"] == "Sam"
+    assert calls == ["4cOdK2wGLETKBW3PvgPWqT"]
+    assert fake_ytm.searches == [("Never Gonna Give You Up Rick Astley", "songs", 10)]
+
+
+def test_add_spotify_album_link_400(client):
+    r = add(client, "https://open.spotify.com/album/4cOdK2wGLETKBW3PvgPWqT")
+    assert r.status_code == 400
+    assert r.json()["detail"] == "Only Spotify song links are supported (not albums or playlists)"
+
+
+def test_add_spotify_no_match_404(client, monkeypatch, fake_ytm):
+    from app.models import Track
+
+    fake_spotify(monkeypatch)
+    fake_ytm.results = [Track(video_id="babyshark00", title="Baby Shark", artist="Pinkfong", duration_seconds=80)]
+    r = add(client, SPOTIFY_TRACK_URL)
+    assert r.status_code == 404
+    assert r.json()["detail"] == "Couldn't find that song on YouTube Music"
+
+
+def test_add_spotify_unreadable_502(client, monkeypatch):
+    from app.ytm import UpstreamError
+
+    fake_spotify(monkeypatch, error=UpstreamError("layout changed"))
+    r = add(client, SPOTIFY_TRACK_URL)
+    assert r.status_code == 502
+    assert r.json()["detail"] == "Couldn't read that Spotify link"
+
+
+def test_add_spotify_missing_track_404(client, monkeypatch):
+    fake_spotify(monkeypatch, error=LookupError("gone"))
+    assert add(client, SPOTIFY_TRACK_URL).status_code == 404

@@ -17,6 +17,7 @@ from app.links import VIDEO_ID_RE, parse_video_id
 from app.models import RoomState, Track
 from app.room import Room
 from app.settings import Settings
+from app.spotify import SpotifyNotATrack, best_match, fetch_spotify_track, parse_spotify
 from app.ytm import UpstreamError, YTMClient
 
 log = logging.getLogger(__name__)
@@ -205,17 +206,42 @@ def create_app(
     async def get_state() -> RoomState:
         return room.snapshot()
 
+    def spotify_to_youtube(track_id: str) -> Track:
+        """Find the YouTube Music song matching a Spotify track. Blocking."""
+        try:
+            spotify = fetch_spotify_track(track_id)
+        except LookupError:
+            raise HTTPException(404, "That Spotify song doesn't exist")
+        except UpstreamError:
+            raise HTTPException(502, "Couldn't read that Spotify link")
+        query = " ".join([spotify.name, *spotify.artists[:1]])
+        try:
+            candidates = ytm.search(query, "songs", 10)
+        except UpstreamError as e:
+            raise HTTPException(502, f"YouTube Music search failed: {e}")
+        match = best_match(spotify, candidates)
+        if match is None:
+            raise HTTPException(404, "Couldn't find that song on YouTube Music")
+        return match
+
     @api.post("/api/queue")
     async def add_to_queue(body: AddRequest) -> RoomState:
-        video_id = parse_video_id(body.input)
-        if video_id is None:
-            raise HTTPException(400, "Not a YouTube link or video id")
         try:
-            track = await run_in_threadpool(ytm.get_track, video_id)
-        except LookupError:
-            raise HTTPException(404, "That video doesn't exist or isn't available")
-        except UpstreamError as e:
-            raise HTTPException(502, f"YouTube Music lookup failed: {e}")
+            spotify_id = parse_spotify(body.input)
+        except SpotifyNotATrack:
+            raise HTTPException(400, "Only Spotify song links are supported (not albums or playlists)")
+        if spotify_id is not None:
+            track = await run_in_threadpool(spotify_to_youtube, spotify_id)
+        else:
+            video_id = parse_video_id(body.input)
+            if video_id is None:
+                raise HTTPException(400, "Not a YouTube or Spotify link")
+            try:
+                track = await run_in_threadpool(ytm.get_track, video_id)
+            except LookupError:
+                raise HTTPException(404, "That video doesn't exist or isn't available")
+            except UpstreamError as e:
+                raise HTTPException(502, f"YouTube Music lookup failed: {e}")
         added_by = (body.added_by or "").strip()[:40] or None
         room.add(track, added_by)
         return await changed()

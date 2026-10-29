@@ -14,7 +14,14 @@ OWNER = {"username": "me", "password": "pw"}
 
 
 class FakeYTM:
+    def __init__(self):
+        self.searches = []  # (query, kind, limit) per call
+        self.results = None  # set to a list of Tracks to override the canned results
+
     def search(self, query, kind="songs", limit=20):
+        self.searches.append((query, kind, limit))
+        if self.results is not None:
+            return self.results
         if query == "boom":
             raise UpstreamError("youtube is down")
         return [
@@ -93,8 +100,13 @@ def join_url_token(client: TestClient) -> str:
 
 
 @pytest.fixture
-def anon_client(settings):
-    with TestClient(create_app(ytm=FakeYTM(), static_dir=None, settings=settings)) as c:
+def fake_ytm():
+    return FakeYTM()
+
+
+@pytest.fixture
+def anon_client(settings, fake_ytm):
+    with TestClient(create_app(ytm=fake_ytm, static_dir=None, settings=settings)) as c:
         yield c
 
 
