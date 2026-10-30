@@ -1,6 +1,7 @@
 import pytest
+from ytmusicapi.models.lyrics import LyricLine as YTLyricLine
 
-from app.models import Track
+from app.models import LyricLine, Track
 from app.ytm import UpstreamError, YTMClient
 
 SEARCH_ROW = {
@@ -26,11 +27,14 @@ SONG = {
 
 
 class FakeYT:
-    def __init__(self, search_rows=(), song=None, error=None):
+    def __init__(self, search_rows=(), song=None, error=None, lyrics_id=None, lyrics=None):
         self.search_rows = list(search_rows)
         self.song = song
         self.error = error
+        self.lyrics_id = lyrics_id
+        self.lyrics = lyrics
         self.calls = []
+        self.lyrics_calls = []  # (browseId, timestamps) per get_lyrics call
 
     def search(self, query, filter=None, limit=20):
         self.calls.append((query, filter, limit))
@@ -42,6 +46,15 @@ class FakeYT:
         if self.error:
             raise self.error
         return self.song
+
+    def get_watch_playlist(self, videoId=None, limit=25):
+        if self.error:
+            raise self.error
+        return {"tracks": [], "lyrics": self.lyrics_id}
+
+    def get_lyrics(self, browseId, timestamps=False):
+        self.lyrics_calls.append((browseId, timestamps))
+        return self.lyrics
 
 
 def test_search_maps_fields():
@@ -87,3 +100,38 @@ def test_upstream_exception_wrapped():
         client.search("x")
     with pytest.raises(UpstreamError):
         client.get_track("bbbbbbbbbbb")
+
+
+TIMED = {
+    "lyrics": [YTLyricLine("Hello", 9200, 10630, 1), YTLyricLine(" World ", 10680, 12540, 2),
+               YTLyricLine("", 13000, 14000, 3)],
+    "source": "Source: LyricFind",
+    "hasTimestamps": True,
+}
+
+
+def test_synced_lyrics_from_timestamps():
+    yt = FakeYT(lyrics_id="MPLYt_x", lyrics=TIMED)
+    assert YTMClient(yt).get_synced_lyrics("bbbbbbbbbbb") == [
+        LyricLine(start_ms=9200, text="Hello"), LyricLine(start_ms=10680, text="World")]
+    assert yt.lyrics_calls == [("MPLYt_x", True)]
+
+
+def test_synced_lyrics_none_without_browse_id():
+    yt = FakeYT(lyrics_id=None, lyrics=TIMED)
+    assert YTMClient(yt).get_synced_lyrics("bbbbbbbbbbb") == []
+    assert yt.lyrics_calls == []
+
+
+def test_synced_lyrics_ignores_unsynced():
+    yt = FakeYT(lyrics_id="MPLYt_x", lyrics={"lyrics": "Hello\nWorld", "source": None, "hasTimestamps": False})
+    assert YTMClient(yt).get_synced_lyrics("bbbbbbbbbbb") == []
+
+
+def test_synced_lyrics_none_when_youtube_has_nothing():
+    assert YTMClient(FakeYT(lyrics_id="MPLYt_x", lyrics=None)).get_synced_lyrics("bbbbbbbbbbb") == []
+
+
+def test_synced_lyrics_wraps_errors():
+    with pytest.raises(UpstreamError):
+        YTMClient(FakeYT(error=RuntimeError("boom"))).get_synced_lyrics("bbbbbbbbbbb")

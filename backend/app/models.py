@@ -23,3 +23,12 @@ class RoomState(BaseModel):
     queue: list[QueueItem]
     is_playing: bool
     version: int
+
+
+class LyricLine(BaseModel):
+    start_ms: int  # when the line starts being sung
+    text: str
+
+
+class Lyrics(BaseModel):
+    lines: list[LyricLine]  # timed lines only, sorted by start_ms; empty when none were found
