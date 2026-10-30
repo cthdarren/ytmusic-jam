@@ -24,6 +24,8 @@ class Settings:
     telegram_token: str | None = None
     # Show the line being sung in the host tab's title.
     lyrics: bool = True
+    # Show each lyric line this many milliseconds early (negative: late).
+    lyrics_offset_ms: int = 500
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -43,4 +45,5 @@ class Settings:
             preload_workers=int(os.environ.get("JAM_PRELOAD_WORKERS") or 4),
             telegram_token=(os.environ.get("JAM_TELEGRAM_TOKEN") or "").strip() or None,
             lyrics=os.environ.get("JAM_LYRICS", "").strip().lower() not in ("0", "false", "no", "off"),
+            lyrics_offset_ms=int(os.environ.get("OFFSET_LYRICS_MS", "").strip() or 500),
         )

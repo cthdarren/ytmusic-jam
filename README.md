@@ -92,7 +92,8 @@ While a song plays, the player page's tab title shows the line being sung, e.g.
 `Violeta  -  IZ*ONE  |  <current line>`, so a status bar like waybar can show it.
 Paused, or with no timed lyrics for the song, it's just `Violeta - IZ*ONE`. Lyrics come
 from YouTube Music, or from [LRCLIB](https://lrclib.net) when YouTube Music has no
-timed ones. Set `JAM_LYRICS=false` to turn this off.
+timed ones. Set `JAM_LYRICS=false` to turn this off. Each line shows 500 ms early so it
+keeps up with the singing; change that with `OFFSET_LYRICS_MS` (milliseconds, negative for later).
 
 ## Telegram bot (optional)
 

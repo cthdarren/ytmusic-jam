@@ -212,3 +212,16 @@ def test_settings_lyrics_env(monkeypatch, tmp_path, value, expected):
     else:
         monkeypatch.setenv("JAM_LYRICS", value)
     assert Settings.from_env().lyrics is expected
+
+
+@pytest.mark.parametrize("value, expected", [(None, 500), ("", 500), ("250", 250), (" 0 ", 0), ("-100", -100)])
+def test_settings_lyrics_offset_env(monkeypatch, tmp_path, value, expected):
+    monkeypatch.setenv("JAM_USERNAME", "me")
+    monkeypatch.setenv("JAM_PASSWORD", "pw")
+    monkeypatch.setenv("JAM_SECRET", "x" * 32)
+    monkeypatch.setenv("JAM_DATA_DIR", str(tmp_path))
+    if value is None:
+        monkeypatch.delenv("OFFSET_LYRICS_MS", raising=False)
+    else:
+        monkeypatch.setenv("OFFSET_LYRICS_MS", value)
+    assert Settings.from_env().lyrics_offset_ms == expected

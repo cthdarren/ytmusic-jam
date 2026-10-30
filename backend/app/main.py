@@ -236,7 +236,9 @@ def create_app(
             raise HTTPException(404, "That song isn't in the jam")
         if not settings.lyrics:
             return Lyrics(lines=[])
-        return Lyrics(lines=await run_in_threadpool(lyrics.find, track))
+        lines = await run_in_threadpool(lyrics.find, track)
+        offset = settings.lyrics_offset_ms
+        return Lyrics(lines=[line.model_copy(update={"start_ms": max(0, line.start_ms - offset)}) for line in lines])
 
     @api.get("/api/state")
     async def get_state() -> RoomState:

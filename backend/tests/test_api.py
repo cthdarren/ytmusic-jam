@@ -1,3 +1,4 @@
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import create_app
@@ -597,7 +598,8 @@ def test_lyrics_for_song_in_jam(client):
     add(client, ID)
     r = client.get(f"/api/lyrics/{ID}")
     assert r.status_code == 200
-    assert r.json() == {"lines": [{"start_ms": 1000, "text": f"la {ID}"}]}
+    # FakeYTM's line starts at 1000 ms; shown 500 ms early by default (OFFSET_LYRICS_MS)
+    assert r.json() == {"lines": [{"start_ms": 500, "text": f"la {ID}"}]}
 
 
 def test_lyrics_fall_back_to_lrclib(client, fake_lrclib):
@@ -628,3 +630,14 @@ def test_lyrics_off(settings, fake_ytm, fake_lrclib):
         assert c.get(f"/api/lyrics/{ID}").json() == {"lines": []}
     assert fake_ytm.lyrics_calls == []
     assert fake_lrclib.calls == []
+
+
+@pytest.mark.parametrize("offset, start_ms", [(300, 700), (0, 1000), (-200, 1200), (1500, 0)])
+def test_lyrics_offset(settings, fake_ytm, offset, start_ms):
+    settings.lyrics_offset_ms = offset
+    with TestClient(create_app(ytm=fake_ytm, static_dir=None, settings=settings)) as c:
+        login(c)
+        add(c, ID)
+        assert c.get(f"/api/lyrics/{ID}").json()["lines"][0]["start_ms"] == start_ms
+        # the offset applies to every request, not once to the cached lines
+        assert c.get(f"/api/lyrics/{ID}").json()["lines"][0]["start_ms"] == start_ms

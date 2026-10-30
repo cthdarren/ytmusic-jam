@@ -26,7 +26,7 @@ class RoomState(BaseModel):
 
 
 class LyricLine(BaseModel):
-    start_ms: int  # when the line starts being sung
+    start_ms: int  # when the line starts being sung (/api/lyrics shifts it by OFFSET_LYRICS_MS)
     text: str
 
 
