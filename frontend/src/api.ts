@@ -1,4 +1,4 @@
-import type { Role, RoomState, SearchKind, Track } from './types'
+import type { Lyrics, Role, RoomState, SearchKind, Track } from './types'
 
 /** Fired on window when the session is gone (401 or websocket close 4401). */
 export const UNAUTHORIZED_EVENT = 'jam:unauthorized'
@@ -102,3 +102,6 @@ export const next = (expectedItemId: string | null, manual = false) =>
 
 export const setPlaying = (playing: boolean) =>
   request<RoomState>('/api/player/playing', { method: 'POST', body: { playing } })
+
+/** Timed lyrics for a song in the jam (empty when none were found or lyrics are turned off). */
+export const getLyrics = (videoId: string) => request<Lyrics>(`/api/lyrics/${videoId}`)

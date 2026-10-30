@@ -20,4 +20,21 @@ describe('pageTitle', () => {
   it('leaves out a missing artist', () => {
     expect(pageTitle(item('Some Video', ''))).toBe('Some Video')
   })
+
+  it('adds the line being sung as "title  -  artist  |  line"', () => {
+    expect(pageTitle(item('비올레타 Violeta', 'IZ*ONE'), '꿈을 꾸는 듯해')).toBe('비올레타 Violeta  -  IZ*ONE  |  꿈을 꾸는 듯해')
+  })
+
+  it('leaves out a missing artist next to a line', () => {
+    expect(pageTitle(item('Some Video', ''), 'la la')).toBe('Some Video  |  la la')
+  })
+
+  it('keeps "title - artist" when there is no line', () => {
+    expect(pageTitle(item('X', 'Y'), null)).toBe('X - Y')
+    expect(pageTitle(item('X', 'Y'), '')).toBe('X - Y')
+  })
+
+  it('ignores a line when nothing is playing', () => {
+    expect(pageTitle(null, 'stray')).toBe('YT Music Jam')
+  })
 })

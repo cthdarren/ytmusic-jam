@@ -22,6 +22,15 @@ export interface RoomState {
   version: number
 }
 
+export interface LyricLine {
+  start_ms: number
+  text: string
+}
+
+export interface Lyrics {
+  lines: LyricLine[] // timed lines only, sorted by start_ms; empty when none were found
+}
+
 export type Role = 'owner' | 'guest'
 
 export type SearchKind = 'songs' | 'videos'
