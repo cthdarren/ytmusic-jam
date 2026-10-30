@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { next, setPlaying } from '../api'
+import { getLyrics, next, setPlaying } from '../api'
 import {
   afterError,
   audioUrl,
@@ -11,13 +11,23 @@ import {
   shouldReportPlay,
   SILENT_AUDIO,
 } from '../hostPlayerLogic'
-import type { RoomState } from '../types'
+import { currentLine } from '../lyrics'
+import type { LyricLine, RoomState } from '../types'
 
 /**
  * The speaker: plays the room's current song from the server (which fetches it with yt-dlp)
  * and reports back when a song ends, fails, or is paused/resumed on this device.
+ * `onLyric` gets the lyric line being sung, or null when paused or there is none.
  */
-export function HostPlayer({ state, onError }: { state: RoomState | null; onError: (msg: string) => void }) {
+export function HostPlayer({
+  state,
+  onError,
+  onLyric,
+}: {
+  state: RoomState | null
+  onError: (msg: string) => void
+  onLyric: (line: string | null) => void
+}) {
   const [started, setStarted] = useState(false)
   const [loading, setLoading] = useState(false)
   const audioRef = useRef<HTMLAudioElement>(null)
@@ -31,6 +41,8 @@ export function HostPlayer({ state, onError }: { state: RoomState | null; onErro
   useEffect(() => {
     stateRef.current = state
   }, [state])
+  // Timed lyrics of the song they were fetched for.
+  const lyricsRef = useRef<{ videoId: string; lines: LyricLine[] } | null>(null)
 
   const nowPlaying = state?.now_playing ?? null
   const nowPlayingId = nowPlaying?.id ?? null
@@ -100,6 +112,29 @@ export function HostPlayer({ state, onError }: { state: RoomState | null; onErro
 
   useEffect(() => () => clearTimeout(reportTimer.current), [])
 
+  // Fetch the new song's lyrics; until they arrive (or if there are none) there is no line.
+  useEffect(() => {
+    onLyric(null)
+    lyricsRef.current = null
+    if (videoId === null) return
+    let cancelled = false
+    getLyrics(videoId).then(
+      ({ lines }) => {
+        if (!cancelled) lyricsRef.current = { videoId, lines }
+      },
+      () => {}, // no lyrics is fine
+    )
+    return () => {
+      cancelled = true
+    }
+  }, [videoId, onLyric])
+
+  const reportLyric = (audio: HTMLAudioElement) => {
+    const lyrics = lyricsRef.current
+    const current = stateRef.current?.now_playing?.track.video_id
+    onLyric(audio.paused || !lyrics || lyrics.videoId !== current ? null : currentLine(lyrics.lines, audio.currentTime * 1000))
+  }
+
   const handle = (event: PlayerEvent) => {
     clearTimeout(reportTimer.current)
     const action = onPlayerEvent(event, loadedItemRef.current)
@@ -148,13 +183,15 @@ export function HostPlayer({ state, onError }: { state: RoomState | null; onErro
           if (loadedItemRef.current) consecutiveErrors.current = 0
           reportLater((audio, roomPlaying) => shouldReportPlay({ paused: audio.paused, roomPlaying }), true)
         }}
-        onPause={() =>
+        onTimeUpdate={(e) => reportLyric(e.currentTarget)}
+        onPause={() => {
+          onLyric(null)
           reportLater(
             (audio, roomPlaying) =>
               shouldReportPause({ paused: audio.paused, roomPlaying, currentTime: audio.currentTime, duration: audio.duration }),
             false,
           )
-        }
+        }}
         onEnded={() => handle({ kind: 'ended' })}
         onError={() => {
           if (!loadedItemRef.current) return // src was cleared on purpose (or the silent unlock clip)

@@ -70,10 +70,12 @@ function Jam({ role, onLoggedOut }: { role: Role; onLoggedOut: () => void }) {
   const [queueOpen, setQueueOpen] = useState(false)
   const [inviteOpen, setInviteOpen] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
+  // The lyric line being sung; only the player page knows it.
+  const [lyric, setLyric] = useState<string | null>(null)
 
   const showError = useCallback((msg: string) => setToast(msg), [])
 
-  const title = pageTitle(state?.now_playing ?? null)
+  const title = pageTitle(state?.now_playing ?? null, isHost ? lyric : null)
   useEffect(() => {
     document.title = title
     return () => {
@@ -132,7 +134,7 @@ function Jam({ role, onLoggedOut }: { role: Role; onLoggedOut: () => void }) {
         onLogout={() => run(api.logout).then(onLoggedOut)}
       />
 
-      {isHost ? <HostPlayer state={state} onError={showError} /> : null}
+      {isHost ? <HostPlayer state={state} onError={showError} onLyric={setLyric} /> : null}
 
       <main className="content">
         <SearchBar busy={searching} onSearch={doSearch} onAddLink={addLink} />
