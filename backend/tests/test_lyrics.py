@@ -168,3 +168,7 @@ def test_finder_forgets_oldest_beyond_limit():
     for vid in ("a", "b", "a", "c", "a", "b"):
         finder.find(TRACK.model_copy(update={"video_id": vid}))
     assert ytm.calls == ["a", "b", "c", "b"]
+
+
+def test_parse_lrc_drops_music_note_lines():
+    assert parse_lrc("[00:00.00]♪\n[00:05.00]Hi\n[00:09.00] ♪ \n") == lines((5000, "Hi"))

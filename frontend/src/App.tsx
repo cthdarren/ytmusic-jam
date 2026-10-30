@@ -9,7 +9,7 @@ import { SearchBar } from './components/SearchBar'
 import { SearchResults } from './components/SearchResults'
 import { TopBar } from './components/TopBar'
 import { describeAdded } from './describeAdded'
-import { APP_NAME, pageTitle } from './pageTitle'
+import { pageTitle, useDocumentTitle } from './pageTitle'
 import type { Role, SearchKind, Track } from './types'
 import { useRoom } from './useRoom'
 
@@ -75,13 +75,7 @@ function Jam({ role, onLoggedOut }: { role: Role; onLoggedOut: () => void }) {
 
   const showError = useCallback((msg: string) => setToast(msg), [])
 
-  const title = pageTitle(state?.now_playing ?? null, isHost ? lyric : null)
-  useEffect(() => {
-    document.title = title
-    return () => {
-      document.title = APP_NAME
-    }
-  }, [title])
+  useDocumentTitle(pageTitle(state?.now_playing ?? null, isHost ? lyric : null))
 
   useEffect(() => {
     if (!toast) return

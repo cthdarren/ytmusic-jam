@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest'
-import { pageTitle } from './pageTitle'
+import { renderHook } from '@testing-library/react'
+import { describe, expect, it, vi } from 'vitest'
+import { pageTitle, useDocumentTitle } from './pageTitle'
 import type { QueueItem } from './types'
 
 const item = (title: string, artist: string): QueueItem => ({
@@ -36,5 +37,20 @@ describe('pageTitle', () => {
 
   it('ignores a line when nothing is playing', () => {
     expect(pageTitle(null, 'stray')).toBe('YT Music Jam')
+  })
+})
+
+describe('useDocumentTitle', () => {
+  it('changes the title straight to the next one, without flashing the app name in between', () => {
+    const { rerender, unmount } = renderHook(({ title }) => useDocumentTitle(title), { initialProps: { title: 'A  -  B  |  one' } })
+    const set = vi.spyOn(document, 'title', 'set')
+    try {
+      rerender({ title: 'A  -  B  |  two' })
+      expect(set.mock.calls).toEqual([['A  -  B  |  two']])
+      unmount()
+      expect(set.mock.lastCall).toEqual(['YT Music Jam'])
+    } finally {
+      set.mockRestore()
+    }
   })
 })

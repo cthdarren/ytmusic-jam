@@ -16,7 +16,7 @@ from collections.abc import Callable
 from typing import Protocol
 
 from app.models import LyricLine, Track
-from app.ytm import UpstreamError
+from app.ytm import UpstreamError, has_words
 
 log = logging.getLogger(__name__)
 
@@ -28,7 +28,7 @@ LRC_STAMP_RE = re.compile(r"\[(\d+):(\d+(?:\.\d+)?)\]")
 
 
 def parse_lrc(text: str) -> list[LyricLine]:
-    """Lines of an LRC file, sorted by time. Tags like [ar:...] and blank lines are dropped."""
+    """Lines of an LRC file, sorted by time. Tags like [ar:...], blank and "♪" lines are dropped."""
     lines = []
     for raw in text.splitlines():
         stamps = []
@@ -37,7 +37,7 @@ def parse_lrc(text: str) -> list[LyricLine]:
             stamps.append(round((int(match[1]) * 60 + float(match[2])) * 1000))
             rest = rest[match.end():]
         rest = rest.strip()
-        if rest:
+        if has_words(rest):
             lines.extend(LyricLine(start_ms=ms, text=rest) for ms in stamps)
     return sorted(lines, key=lambda line: line.start_ms)
 

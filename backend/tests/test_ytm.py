@@ -1,3 +1,6 @@
+import threading
+import time
+
 import pytest
 from ytmusicapi.models.lyrics import LyricLine as YTLyricLine
 
@@ -135,3 +138,55 @@ def test_synced_lyrics_none_when_youtube_has_nothing():
 def test_synced_lyrics_wraps_errors():
     with pytest.raises(UpstreamError):
         YTMClient(FakeYT(error=RuntimeError("boom"))).get_synced_lyrics("bbbbbbbbbbb")
+
+
+def test_synced_lyrics_drops_music_note_lines():
+    timed = {**TIMED, "lyrics": [YTLyricLine("♪", 0, 6000, 1), YTLyricLine("Ah ah", 6980, 9000, 2),
+                                 YTLyricLine(" ♪ ♪ ", 9100, 12000, 3), YTLyricLine("눈 감아도", 12000, 14000, 4)]}
+    assert YTMClient(FakeYT(lyrics_id="MPLYt_x", lyrics=timed)).get_synced_lyrics("bbbbbbbbbbb") == [
+        LyricLine(start_ms=6980, text="Ah ah"), LyricLine(start_ms=12000, text="눈 감아도")]
+
+
+class OverlapYT(FakeYT):
+    """Sleeps in every call and records how many calls were inside YTMusic at once."""
+
+    def __init__(self):
+        super().__init__(search_rows=[SEARCH_ROW], song=SONG, lyrics_id="MPLYt_x", lyrics=TIMED)
+        self.lock = threading.Lock()
+        self.inside = 0
+        self.max_inside = 0
+
+    def _enter(self):
+        with self.lock:
+            self.inside += 1
+            self.max_inside = max(self.max_inside, self.inside)
+        time.sleep(0.02)
+        with self.lock:
+            self.inside -= 1
+
+    def search(self, *args, **kwargs):
+        self._enter()
+        return super().search(*args, **kwargs)
+
+    def get_song(self, video_id):
+        self._enter()
+        return super().get_song(video_id)
+
+    def get_lyrics(self, browseId, timestamps=False):
+        # Lyrics with timestamps switch the shared client to Android mode while they run
+        # (ytmusicapi's as_mobile, "not thread-safe"), so nothing may run alongside them.
+        self._enter()
+        return super().get_lyrics(browseId, timestamps)
+
+
+def test_calls_into_ytmusic_never_overlap():
+    yt = OverlapYT()
+    client = YTMClient(yt)
+    calls = [lambda: client.get_synced_lyrics("bbbbbbbbbbb"), lambda: client.search("x"),
+             lambda: client.get_track("bbbbbbbbbbb")] * 3
+    threads = [threading.Thread(target=call) for call in calls]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert yt.max_inside == 1
