@@ -86,6 +86,14 @@ Downloaded songs are short-term: they live in `./data/audio-cache` (500 MB by
 default, set `JAM_AUDIO_CACHE_MB`), the least recently played are deleted first,
 anything unused for a day is deleted, and **Clear queue** empties it.
 
+### Lyrics in the tab title
+
+While a song plays, the player page's tab title shows the line being sung, e.g.
+`Violeta  -  IZ*ONE  |  <current line>`, so a status bar like waybar can show it.
+Paused, or with no timed lyrics for the song, it's just `Violeta - IZ*ONE`. Lyrics come
+from YouTube Music, or from [LRCLIB](https://lrclib.net) when YouTube Music has no
+timed ones. Set `JAM_LYRICS=false` to turn this off.
+
 ## Telegram bot (optional)
 
 Friends can queue songs by sending a YouTube or Spotify link to a Telegram bot (on a

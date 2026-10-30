@@ -14,7 +14,8 @@ from app.audio import AudioCache, AudioPaused, AudioUnavailable, Preloader, ytdl
 from app.auth import COOKIE_NAME, SESSION_MAX_AGE, Auth, Role
 from app.hub import Hub
 from app.links import VIDEO_ID_RE, parse_video_id
-from app.models import RoomState, Track
+from app.lyrics import LyricsFinder, fetch_lrclib
+from app.models import Lyrics, RoomState, Track
 from app.room import Room
 from app.settings import Settings
 from app.spotify import SpotifyNotATrack, best_match, fetch_spotify_track, parse_spotify
@@ -77,6 +78,7 @@ def create_app(
             downloader=ytdlp_download,
         )
     preloader = Preloader(audio, concurrency=settings.preload_workers)
+    lyrics = LyricsFinder(ytm, lrclib=fetch_lrclib)
     if telegram_api is None and settings.telegram_token:
         telegram_api = TelegramAPI(settings.telegram_token)
     bot = (
@@ -222,6 +224,19 @@ def create_app(
             # Only songs that are no longer playing or next get paused, so the host has moved on.
             raise HTTPException(503, "That song's download was paused for a more urgent one")
         return FileResponse(path, media_type=AUDIO_MEDIA_TYPES.get(path.suffix, "application/octet-stream"))
+
+    @api.get("/api/lyrics/{video_id}")
+    async def get_lyrics(video_id: str) -> Lyrics:
+        if not VIDEO_ID_RE.fullmatch(video_id):
+            raise HTTPException(400, "Not a video id")
+        state = room.snapshot()
+        night = [*state.played, *([state.now_playing] if state.now_playing else []), *state.queue]
+        track = next((item.track for item in night if item.track.video_id == video_id), None)
+        if track is None:
+            raise HTTPException(404, "That song isn't in the jam")
+        if not settings.lyrics:
+            return Lyrics(lines=[])
+        return Lyrics(lines=await run_in_threadpool(lyrics.find, track))
 
     @api.get("/api/state")
     async def get_state() -> RoomState:

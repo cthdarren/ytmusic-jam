@@ -1,4 +1,7 @@
-from tests.conftest import next_state
+from fastapi.testclient import TestClient
+
+from app.main import create_app
+from tests.conftest import login, next_state
 
 ID = "dQw4w9WgXcQ"
 
@@ -588,3 +591,40 @@ def test_reset_link_signs_out_telegram_users(settings, fake_ytm):
         telegram.push(f"https://youtu.be/{ID}")
         assert wait_for(lambda: telegram.sent[-1:] == ["Send me the jam's invite link first (ask the host for it)."])
         assert c.get("/api/state").json()["now_playing"] is None
+
+
+def test_lyrics_for_song_in_jam(client):
+    add(client, ID)
+    r = client.get(f"/api/lyrics/{ID}")
+    assert r.status_code == 200
+    assert r.json() == {"lines": [{"start_ms": 1000, "text": f"la {ID}"}]}
+
+
+def test_lyrics_fall_back_to_lrclib(client, fake_lrclib):
+    add(client, "nolyrics000")
+    assert client.get("/api/lyrics/nolyrics000").json() == {"lines": []}
+    assert fake_lrclib.calls == [("T-nolyrics000", "Artist", None)]
+
+
+def test_lyrics_unknown_song_404(client):
+    r = client.get(f"/api/lyrics/{ID}")
+    assert r.status_code == 404
+    assert r.json()["detail"] == "That song isn't in the jam"
+
+
+def test_lyrics_bad_id_400(client):
+    assert client.get("/api/lyrics/not-an-id").status_code == 400
+
+
+def test_lyrics_needs_login(anon_client):
+    assert anon_client.get(f"/api/lyrics/{ID}").status_code == 401
+
+
+def test_lyrics_off(settings, fake_ytm, fake_lrclib):
+    settings.lyrics = False
+    with TestClient(create_app(ytm=fake_ytm, static_dir=None, settings=settings)) as c:
+        login(c)
+        add(c, ID)
+        assert c.get(f"/api/lyrics/{ID}").json() == {"lines": []}
+    assert fake_ytm.lyrics_calls == []
+    assert fake_lrclib.calls == []

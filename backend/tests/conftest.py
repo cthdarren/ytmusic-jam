@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from app.audio import AudioPaused, AudioUnavailable
 from app.main import create_app
-from app.models import Track
+from app.models import LyricLine, Track
 from app.settings import Settings
 from app.ytm import UpstreamError
 
@@ -17,6 +17,7 @@ class FakeYTM:
     def __init__(self):
         self.searches = []  # (query, kind, limit) per call
         self.results = None  # set to a list of Tracks to override the canned results
+        self.lyrics_calls = []
 
     def search(self, query, kind="songs", limit=20):
         self.searches.append((query, kind, limit))
@@ -33,6 +34,12 @@ class FakeYTM:
         if video_id == "missingvid0":
             raise LookupError("not found")
         return Track(video_id=video_id, title=f"T-{video_id}", artist="Artist")
+
+    def get_synced_lyrics(self, video_id):
+        self.lyrics_calls.append(video_id)
+        if video_id == "nolyrics000":
+            return []
+        return [LyricLine(start_ms=1000, text=f"la {video_id}")]
 
 
 class FakeDownloader:
@@ -80,6 +87,25 @@ def fake_downloader(monkeypatch):
     """Never run the real yt-dlp in tests: every app gets this fake downloader."""
     fake = FakeDownloader(size=1000)
     monkeypatch.setattr("app.main.ytdlp_download", fake)
+    return fake
+
+
+class FakeLRCLIB:
+    """Stands in for lrclib.net: finds nothing, records (title, artist, duration_seconds) per call."""
+
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, title, artist, duration_seconds):
+        self.calls.append((title, artist, duration_seconds))
+        return []
+
+
+@pytest.fixture(autouse=True)
+def fake_lrclib(monkeypatch):
+    """Never call the real lrclib.net in tests."""
+    fake = FakeLRCLIB()
+    monkeypatch.setattr("app.main.fetch_lrclib", fake)
     return fake
 
 

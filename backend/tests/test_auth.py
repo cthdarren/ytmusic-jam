@@ -196,3 +196,19 @@ def test_settings_cookie_and_cache_env(monkeypatch, tmp_path):
     s = Settings.from_env()
     assert s.telegram_token == "123:abc"
     assert (s.cookies_file, s.audio_cache_mb, s.preload_songs, s.preload_workers) == (Path("/secrets/yt.txt"), 200, 5, 6)
+
+
+@pytest.mark.parametrize("value, expected", [
+    (None, True), ("", True), ("true", True), ("1", True),
+    ("false", False), ("0", False), ("OFF", False), ("no", False), (" False ", False),
+])
+def test_settings_lyrics_env(monkeypatch, tmp_path, value, expected):
+    monkeypatch.setenv("JAM_USERNAME", "me")
+    monkeypatch.setenv("JAM_PASSWORD", "pw")
+    monkeypatch.setenv("JAM_SECRET", "x" * 32)
+    monkeypatch.setenv("JAM_DATA_DIR", str(tmp_path))
+    if value is None:
+        monkeypatch.delenv("JAM_LYRICS", raising=False)
+    else:
+        monkeypatch.setenv("JAM_LYRICS", value)
+    assert Settings.from_env().lyrics is expected

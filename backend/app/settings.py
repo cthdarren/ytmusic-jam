@@ -22,6 +22,8 @@ class Settings:
     preload_workers: int = 4
     # Telegram bot token from @BotFather; no token, no bot.
     telegram_token: str | None = None
+    # Show the line being sung in the host tab's title.
+    lyrics: bool = True
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -40,4 +42,5 @@ class Settings:
             preload_songs=int(os.environ.get("JAM_PRELOAD_SONGS") or 20),
             preload_workers=int(os.environ.get("JAM_PRELOAD_WORKERS") or 4),
             telegram_token=(os.environ.get("JAM_TELEGRAM_TOKEN") or "").strip() or None,
+            lyrics=os.environ.get("JAM_LYRICS", "").strip().lower() not in ("0", "false", "no", "off"),
         )
